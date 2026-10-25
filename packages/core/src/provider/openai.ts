@@ -1,5 +1,7 @@
 import OpenAI from "openai";
+import type { ReasoningEffort } from "openai/resources/shared";
 import { installId } from "../storage/install-id";
+import { capability } from "./models";
 
 // The SDK already retries 408/409/429/5xx and connection errors, honoring
 // retry-after(-ms), else exponential backoff with jitter.
@@ -22,17 +24,31 @@ export function readRateLimits(headers: Headers) {
 	};
 }
 
-// Streams the reply text for one prompt.
-export async function* streamText(input: string): AsyncGenerator<string> {
+// Streams the reply text for one prompt. An effort the model can't take at all
+// (no reasoning) is dropped, so one setting works across models.
+export async function* streamText(
+	input: string,
+	{ model = "gpt-5.6-luna", effort }: { model?: string; effort?: string } = {},
+): AsyncGenerator<string> {
+	const { efforts } = capability(model);
+	if (effort && efforts.length > 0 && !efforts.includes(effort)) {
+		throw new Error(
+			`effort "${effort}" not supported by ${model}: ${efforts.join(", ")}`,
+		);
+	}
 	if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not set");
 	const client = new OpenAI({ maxRetries: MAX_RETRIES, timeout: TIMEOUT_MS });
 	const { data: stream, response } = await client.responses
 		.create({
-			model: "gpt-5.6-luna",
+			model,
 			input,
 			stream: true,
 			store: false,
 			prompt_cache_key: installId(),
+			reasoning:
+				effort && efforts.length > 0
+					? { effort: effort as ReasoningEffort }
+					: undefined,
 		})
 		.withResponse();
 	lastRateLimits = readRateLimits(response.headers);
