@@ -2,6 +2,7 @@ import { parseArgs } from "node:util";
 import { version } from "../package.json";
 import { enableDebugLog } from "./log/debug";
 import { rgPath } from "./platform/win/bin";
+import { protect, unprotect } from "./platform/win/dpapi";
 import { streamText } from "./provider/openai";
 
 try {
@@ -45,6 +46,16 @@ async function doctor() {
 		console.log(`rg: ${rg.stdout.toString().split("\n")[0].trim()}`);
 	} catch (err) {
 		console.log(`rg: FAILED ${(err as Error).message}`);
+		process.exitCode = 1;
+	}
+	try {
+		const data = new TextEncoder().encode("doctor");
+		if (!unprotect(protect(data)).every((b, i) => b === data[i])) {
+			throw new Error("round-trip mismatch");
+		}
+		console.log("dpapi: ok");
+	} catch (err) {
+		console.log(`dpapi: FAILED ${(err as Error).message}`);
 		process.exitCode = 1;
 	}
 }
