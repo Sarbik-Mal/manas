@@ -3,3 +3,9 @@ declare module "*.exe" {
 	const path: string;
 	export default path;
 }
+
+// Text files embedded with `with { type: "text" }` give their content.
+declare module "*.ps1" {
+	const text: string;
+	export default text;
+}
