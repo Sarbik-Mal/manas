@@ -9,5 +9,5 @@
 		"skipLibCheck": true,
 		"types": ["bun"]
 	},
-	"include": ["packages/*/src", "evals"]
+	"include": ["packages/*/src", "packages/*/scripts", "evals"]
 }
