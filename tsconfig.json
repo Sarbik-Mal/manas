@@ -7,7 +7,8 @@
 		"strict": true,
 		"noEmit": true,
 		"skipLibCheck": true,
-		"types": ["bun"]
+		"types": ["bun"],
+		"jsx": "react-jsx"
 	},
 	"include": ["packages/*/src", "packages/*/scripts", "evals"]
 }
