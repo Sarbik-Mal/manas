@@ -10,9 +10,10 @@
 		"typecheck": "tsc",
 		"lint": "biome check .",
 		"deps": "depcruise packages",
-		"test": "bun test",
+		"fetch-rg": "bun packages/core/scripts/fetch-rg.ts",
+		"test": "bun run fetch-rg && bun test",
 		"check": "bun run typecheck && bun run lint && bun run deps && bun run test",
-		"build": "bun build packages/core/src/main.ts --compile --target=bun-windows-x64 --outfile dist/manas.exe"
+		"build": "bun run fetch-rg && bun build packages/core/src/main.ts --compile --target=bun-windows-x64 --outfile dist/manas.exe"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.6.3",
