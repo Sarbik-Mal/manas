@@ -4,7 +4,6 @@ const MODELS: Record<
 	string,
 	{ efforts: readonly string[]; contextWindow: number }
 > = {
-	// ponytail: contextWindow is the GPT-5 family size, verify before compaction (M4)
 	"gpt-5.6-luna": {
 		efforts: ["none", "low", "medium", "high", "xhigh", "max"],
 		contextWindow: 400_000,
