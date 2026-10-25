@@ -5,6 +5,7 @@
 		"packages/*"
 	],
 	"scripts": {
+		"dev": "bun packages/core/src/main.ts",
 		"typecheck": "tsc",
 		"lint": "biome check .",
 		"deps": "depcruise packages",
