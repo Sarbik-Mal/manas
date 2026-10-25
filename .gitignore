@@ -1,2 +1,18 @@
 /planning_docs
 .env
+.env.*
+
+# Dependencies and build output
+node_modules/
+dist/
+out/
+*.exe
+*.tsbuildinfo
+
+# Manas's own project folder (never committed)
+.manas/
+
+# Logs and temp files
+*.log
+.DS_Store
+Thumbs.db

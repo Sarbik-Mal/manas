@@ -1,0 +1,13 @@
+# Store text files with LF in the repo; Windows checkouts convert as configured.
+* text=auto eol=lf
+
+# Windows scripts keep CRLF
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Binary assets
+*.exe binary
+*.png binary
+*.jpg binary
+*.ipynb text eol=lf
