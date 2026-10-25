@@ -1,0 +1,8 @@
+# Dummy case: proves the runner works end to end.
+task = "Reply with exactly one word: pong"
+fixture = "empty"
+sets = ["smoke"]
+
+[[check]]
+type = "reply"
+contains = "pong"

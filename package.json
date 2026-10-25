@@ -6,6 +6,7 @@
 	],
 	"scripts": {
 		"dev": "bun packages/core/src/main.ts",
+		"evals": "bun evals/run.ts",
 		"typecheck": "tsc",
 		"lint": "biome check .",
 		"deps": "depcruise packages",
