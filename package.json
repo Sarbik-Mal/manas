@@ -1,0 +1,21 @@
+{
+	"name": "manas",
+	"private": true,
+	"workspaces": [
+		"packages/*"
+	],
+	"scripts": {
+		"typecheck": "tsc",
+		"lint": "biome check .",
+		"deps": "depcruise packages",
+		"test": "bun test",
+		"check": "bun run typecheck && bun run lint && bun run deps && bun run test",
+		"build": "bun build packages/core/src/main.ts --compile --target=bun-windows-x64 --outfile dist/manas.exe"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.6.3",
+		"@types/bun": "^1.4.4",
+		"dependency-cruiser": "^18.7.0",
+		"typescript": "6"
+	}
+}
