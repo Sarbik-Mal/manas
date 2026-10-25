@@ -7,7 +7,7 @@ const layers = [
 	["tools"],
 	["permissions"],
 	["safety", "provider", "areas"],
-	["config", "storage"],
+	["config", "storage", "log"],
 	["platform"],
 ];
 

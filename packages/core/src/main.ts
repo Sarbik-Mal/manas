@@ -1,5 +1,6 @@
 import { parseArgs } from "node:util";
 import { version } from "../package.json";
+import { enableDebugLog } from "./log/debug";
 import { streamText } from "./provider/openai";
 
 try {
@@ -8,10 +9,13 @@ try {
 			version: { type: "boolean" },
 			model: { type: "string" },
 			effort: { type: "string" },
+			debug: { type: "boolean" },
 		},
 		allowPositionals: true,
 		strict: true,
 	});
+
+	if (values.debug) enableDebugLog();
 
 	if (values.version) {
 		console.log(`manas ${version}`);

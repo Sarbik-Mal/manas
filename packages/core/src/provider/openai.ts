@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import type { ReasoningEffort } from "openai/resources/shared";
+import { debugLog } from "../log/debug";
 import { installId } from "../storage/install-id";
 import { capability } from "./models";
 
@@ -37,22 +38,62 @@ export async function* streamText(
 		);
 	}
 	if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not set");
-	const client = new OpenAI({ maxRetries: MAX_RETRIES, timeout: TIMEOUT_MS });
-	const { data: stream, response } = await client.responses
-		.create({
-			model,
-			input,
-			stream: true,
-			store: false,
-			prompt_cache_key: installId(),
-			reasoning:
-				effort && efforts.length > 0
-					? { effort: effort as ReasoningEffort }
-					: undefined,
-		})
-		.withResponse();
-	lastRateLimits = readRateLimits(response.headers);
-	for await (const event of stream) {
-		if (event.type === "response.output_text.delta") yield event.delta;
+	const client = new OpenAI({
+		maxRetries: MAX_RETRIES,
+		timeout: TIMEOUT_MS,
+		logLevel: "info",
+		logger: sdkLogger,
+	});
+
+	const start = performance.now();
+	const since = () => Math.round(performance.now() - start);
+	const entry: Record<string, unknown> = { kind: "request", model, effort };
+	try {
+		const { data: stream, response } = await client.responses
+			.create({
+				model,
+				input,
+				stream: true,
+				store: false,
+				prompt_cache_key: installId(),
+				reasoning:
+					effort && efforts.length > 0
+						? { effort: effort as ReasoningEffort }
+						: undefined,
+			})
+			.withResponse();
+		lastRateLimits = entry.rateLimits = readRateLimits(response.headers);
+		for await (const event of stream) {
+			if (event.type === "response.output_text.delta") {
+				entry.firstTokenMs ??= since();
+				yield event.delta;
+			} else if (event.type === "response.completed") {
+				const u = event.response.usage;
+				entry.usage = u && {
+					input: u.input_tokens,
+					cached: u.input_tokens_details.cached_tokens,
+					output: u.output_tokens,
+					reasoning: u.output_tokens_details.reasoning_tokens,
+				};
+			}
+		}
+		entry.status = "ok";
+	} catch (err) {
+		entry.status = "error";
+		entry.error = (err as Error).message;
+		throw err;
+	} finally {
+		entry.ms = since();
+		debugLog(entry);
 	}
 }
+
+// SDK messages (info: retries, failed connections) go to the debug log.
+const toLog = (level: string) => (message: string) =>
+	debugLog({ kind: "sdk", level, message });
+const sdkLogger = {
+	error: toLog("error"),
+	warn: toLog("warn"),
+	info: toLog("info"),
+	debug: toLog("debug"),
+};
