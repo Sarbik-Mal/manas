@@ -15,6 +15,7 @@
       "name": "@manas/core",
       "version": "0.0.1",
       "dependencies": {
+        "@manas/protocol": "workspace:*",
         "openai": "^7.43.0",
         "typebox": "^1.4.3",
       },
@@ -22,6 +23,13 @@
         "@types/react": "^19.3.0",
         "ink": "^8.0.0",
         "react": "^19.3.1",
+      },
+    },
+    "packages/protocol": {
+      "name": "@manas/protocol",
+      "version": "0.0.1",
+      "dependencies": {
+        "typebox": "^1.4.3",
       },
     },
   },
@@ -51,6 +59,8 @@
     "@biomejs/cli-win32-x64": ["@biomejs/cli-win32-x64@2.6.3", "", { "os": "win32", "cpu": "x64" }, "sha512-GhtOPphBWlnCepqpNk/w5eGN5oGRCzL20EbAkL1XCIpyboeVC9R642noyT43l8LSenGS4qz9IL8sKPfwY37V/Q=="],
 
     "@manas/core": ["@manas/core@workspace:packages/core"],
+
+    "@manas/protocol": ["@manas/protocol@workspace:packages/protocol"],
 
     "@types/bun": ["@types/bun@1.4.4", "", { "dependencies": { "bun-types": "1.4.4" } }, "sha512-9wkRDXUXK124pEnAutE6n/l18j+i9GC5IAHK8TmX/2nlySETmky0OU6yL5U8pW1AoKh++AN9auDCr647BfurjQ=="],
 

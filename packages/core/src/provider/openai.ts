@@ -6,7 +6,7 @@ import type {
 import type { ReasoningEffort } from "openai/resources/shared";
 import { debugLog } from "../log/debug";
 import { installId } from "../storage/install-id";
-import { capability } from "./models";
+import { checkEffort } from "./models";
 
 // The SDK already retries 408/409/429/5xx and connection errors, honoring
 // retry-after(-ms), else exponential backoff with jitter.
@@ -59,12 +59,7 @@ export async function* streamResponse(
 		signal?: AbortSignal;
 	} = {},
 ): AsyncGenerator<string, { output: ResponseInputItem[]; usage?: Usage }> {
-	const { efforts } = capability(model);
-	if (effort && efforts.length > 0 && !efforts.includes(effort)) {
-		throw new Error(
-			`effort "${effort}" not supported by ${model}: ${efforts.join(", ")}`,
-		);
-	}
+	const efforts = checkEffort(model, effort);
 	if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not set");
 	const client = new OpenAI({
 		maxRetries: MAX_RETRIES,

@@ -16,3 +16,15 @@ export function capability(model: string) {
 		throw new Error(`unknown model "${model}"`);
 	return MODELS[model];
 }
+
+// Throws on an unknown model or an effort it can't take. A model without
+// reasoning takes any effort: it's dropped, so one setting works everywhere.
+export function checkEffort(model: string, effort: string | undefined) {
+	const { efforts } = capability(model);
+	if (effort && efforts.length > 0 && !efforts.includes(effort)) {
+		throw new Error(
+			`effort "${effort}" not supported by ${model}: ${efforts.join(", ")}`,
+		);
+	}
+	return efforts;
+}

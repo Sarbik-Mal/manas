@@ -4,6 +4,7 @@
 	"private": true,
 	"type": "module",
 	"dependencies": {
+		"@manas/protocol": "workspace:*",
 		"openai": "^7.43.0",
 		"typebox": "^1.4.3"
 	},

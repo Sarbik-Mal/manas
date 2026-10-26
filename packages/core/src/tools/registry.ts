@@ -65,7 +65,9 @@ export async function callTool(
 	}
 	const errors = Value.Errors(tool.schema, input);
 	if (errors.length > 0) {
-		return error(`invalid input for ${name}: ${describe(errors).join("; ")}`);
+		return error(
+			`invalid input for ${name}: ${describeErrors(errors).join("; ")}`,
+		);
 	}
 	// 4. Run.
 	let output: string;
@@ -123,7 +125,7 @@ type ValueError = ReturnType<typeof Value.Errors>[number];
 
 // TypeBox reports each anyOf branch separately; fold them into one line per
 // field, e.g. "/limit: must be integer or null".
-function describe(errors: ValueError[]): string[] {
+export function describeErrors(errors: ValueError[]): string[] {
 	const anyOfs = errors.filter((e) => e.keyword === "anyOf");
 	const inBranch = (e: ValueError, a: ValueError) =>
 		e.schemaPath.startsWith(`${a.schemaPath}/anyOf/`);

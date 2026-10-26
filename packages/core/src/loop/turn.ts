@@ -2,11 +2,12 @@ import type {
 	ResponseFunctionToolCall,
 	ResponseInputItem,
 } from "openai/resources/responses/responses";
-import { streamResponse } from "../provider/openai";
+import { streamResponse, type Usage } from "../provider/openai";
 import { buildRegistry, callTool, type Registry } from "../tools/registry";
 
 export type LoopEvent =
 	| { type: "text"; delta: string }
+	| { type: "message_done"; text: string }
 	| { type: "tool_started"; callId: string; name: string; input: unknown }
 	| {
 			type: "tool_finished";
@@ -14,7 +15,12 @@ export type LoopEvent =
 			status: "ok" | "error" | "interrupted";
 			output: string;
 	  }
-	| { type: "turn_finished"; stopReason: "done" | "interrupted" };
+	| {
+			type: "turn_finished";
+			stopReason: "done" | "interrupted" | "error";
+			usage: Usage;
+			error?: string;
+	  };
 
 const INTERRUPTED = "interrupted by user";
 const note: ResponseInputItem = {
@@ -24,21 +30,27 @@ const note: ResponseInputItem = {
 
 // One user prompt: model → tool calls → results → model, until the model stops
 // calling tools or `signal` aborts. `history` is only ever appended to, so the
-// prompt cache prefix never changes.
+// prompt cache prefix never changes. `inject` hands over prompts sent during
+// the turn; they join between rounds, after the tool results.
 export async function* runTurn(
 	history: ResponseInputItem[],
 	prompt: string,
 	{
 		registry = buildRegistry([]),
 		signal = new AbortController().signal,
+		inject = () => [],
 		...opts
 	}: {
 		model?: string;
 		effort?: string;
 		registry?: Registry;
 		signal?: AbortSignal;
+		inject?: () => string[];
 	} = {},
 ): AsyncGenerator<LoopEvent> {
+	const usage: Usage = { input: 0, cached: 0, output: 0, reasoning: 0 };
+	const finish = (stopReason: "done" | "interrupted") =>
+		({ type: "turn_finished", stopReason, usage }) as const;
 	history.push({ role: "user", content: prompt });
 	while (true) {
 		let text = "";
@@ -55,21 +67,35 @@ export async function* runTurn(
 				yield { type: "text", delta: r.value };
 			}
 			output = r.value.output;
+			for (const k of Object.keys(usage) as (keyof Usage)[]) {
+				usage[k] += r.value.usage?.[k] ?? 0;
+			}
 		} catch (err) {
-			if (!signal.aborted) throw err;
+			if (text) yield { type: "message_done", text };
+			if (!signal.aborted) {
+				// The failed reply is dropped; earlier rounds stay in history.
+				yield {
+					type: "turn_finished",
+					stopReason: "error",
+					usage,
+					error: (err as Error).message,
+				};
+				return;
+			}
 			// Partial items are dropped; the text the user already saw is kept.
 			if (text) history.push({ role: "assistant", content: text });
 			history.push(note);
-			yield { type: "turn_finished", stopReason: "interrupted" };
+			yield finish("interrupted");
 			return;
 		}
+		if (text) yield { type: "message_done", text };
 		history.push(...output);
 
 		const calls = output.filter(
 			(i): i is ResponseFunctionToolCall => i.type === "function_call",
 		);
 		if (calls.length === 0) {
-			yield { type: "turn_finished", stopReason: "done" };
+			yield finish("done");
 			return;
 		}
 
@@ -118,8 +144,9 @@ export async function* runTurn(
 		}
 		if (signal.aborted) {
 			history.push(note);
-			yield { type: "turn_finished", stopReason: "interrupted" };
+			yield finish("interrupted");
 			return;
 		}
+		for (const text of inject()) history.push({ role: "user", content: text });
 	}
 }

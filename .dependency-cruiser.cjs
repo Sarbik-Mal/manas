@@ -22,6 +22,13 @@ module.exports = {
 			to: { path: dir(layers.slice(0, i + 1).flat()) },
 		})),
 		{
+			// Shared by the core and every front end, so it can't depend on either.
+			name: "protocol-stands-alone",
+			severity: "error",
+			from: { path: "^packages/protocol/" },
+			to: { path: "^packages/(?!protocol/)" },
+		},
+		{
 			name: "no-circular",
 			severity: "error",
 			from: {},
