@@ -13,7 +13,8 @@ export type Reply = {
 
 export function fakeOpenAI() {
 	const replies: Reply[] = [];
-	const bodies: { input: ResponseInputItem[] }[] = [];
+	const bodies: ({ input: ResponseInputItem[] } & Record<string, unknown>)[] =
+		[];
 	const sse = (e: object) => `data: ${JSON.stringify(e)}\n\n`;
 	const server = Bun.serve({
 		port: 0,

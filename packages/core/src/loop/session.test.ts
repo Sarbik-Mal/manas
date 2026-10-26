@@ -28,6 +28,7 @@ function start() {
 	const events: SessionEvent[] = [];
 	const session = createSession({
 		registry: buildRegistry([gate]),
+		model: "gpt-5.6-luna",
 		emit: (e) => events.push(e),
 	});
 	const waitFor = async (pred: (e: SessionEvent[]) => boolean) => {
@@ -142,4 +143,47 @@ test("an API error ends that turn; the queue goes on", async () => {
 		{ stopReason: "error", error: expect.stringContaining("400") },
 		{ stopReason: "done" },
 	]);
+});
+
+test("model and effort: silent before a reply, a warning after, from the next turn", async () => {
+	const { session, events, waitFor, idles } = start();
+	const notices = () =>
+		events.flatMap((e) =>
+			e.type === "notice" ? [`${e.level}: ${e.text.slice(0, 40)}`] : [],
+		);
+	session.setEffort("high");
+	expect(notices()).toEqual([]);
+	replies.push(say("one"), say("two"));
+	session.prompt("hi");
+	await waitFor(idles(1));
+	expect(bodies[0]).toMatchObject({
+		model: "gpt-5.6-luna",
+		reasoning: { effort: "high" },
+	});
+
+	session.setEffort("high");
+	session.setEffort("low");
+	session.setModel("gpt-4o-mini");
+	session.setEffort("max");
+	expect(notices()).toEqual([
+		"info: Already using effort high.",
+		"warn: Heads up: your next reply will cost more",
+		"warn: Heads up: your next reply will cost more",
+		"info: gpt-4o-mini has no reasoning effort; it ",
+	]);
+	expect(events.filter((e) => e.type === "notice")[2]).toMatchObject({
+		text: expect.stringContaining("Changing the model makes it start fresh"),
+	});
+	session.prompt("again");
+	await waitFor(idles(2));
+	expect(bodies[1].model).toBe("gpt-4o-mini");
+	expect(bodies[1]).not.toHaveProperty("reasoning");
+
+	expect(() => session.setModel("nope")).toThrow('unknown model "nope"');
+	session.setModel("gpt-5.6-luna");
+	expect(() => session.setEffort("minimal")).toThrow(
+		'effort "minimal" not supported',
+	);
+	session.setEffort(undefined);
+	expect(session.effort).toBeUndefined();
 });

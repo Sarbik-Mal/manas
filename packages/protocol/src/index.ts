@@ -71,7 +71,22 @@ export const Requests = {
 	}),
 	// Queued prompts survive an interrupt unless `cancel_queued`.
 	"session/interrupt": Type.Object({ cancel_queued: Nullable(Type.Boolean()) }),
+	// Both apply from the next turn. Changing either after a reply loses the
+	// cache discount for one reply, so the core sends a warning notice.
+	// `role` is only "main" until subagents bring "cheap".
+	"session/set_model": Type.Object({
+		model: Type.String(),
+		role: Nullable(Type.Literal("main")),
+	}),
+	// `null`: the model's default.
+	"session/set_effort": Type.Object({
+		effort: Type.Union([Type.String(), Type.Null()]),
+	}),
 };
+const ModelState = Type.Object({
+	model: Type.String(),
+	effort: Type.Union([Type.String(), Type.Null()]),
+});
 export const Results = {
 	initialize: Type.Object({
 		protocol_version: Type.Integer(),
@@ -80,6 +95,8 @@ export const Results = {
 	"session/new": Type.Object({ session_id: Type.String() }),
 	"session/prompt": Type.Object({ prompt_id: Type.String() }),
 	"session/interrupt": Type.Object({ still_queued: Type.Array(Type.String()) }),
+	"session/set_model": ModelState,
+	"session/set_effort": ModelState,
 };
 
 export const Usage = Type.Object({

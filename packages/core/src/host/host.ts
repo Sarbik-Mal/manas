@@ -81,6 +81,8 @@ export function createHost(
 			case "running":
 			case "idle":
 				return updateState();
+			case "notice":
+				return notice(e.level, e.text);
 			case "prompt_delivered":
 				return event("prompt/delivered", {
 					prompt_id: e.promptId,
@@ -130,11 +132,7 @@ export function createHost(
 					);
 				const m = model ?? defaults.model ?? "gpt-5.6-luna";
 				const eff = effort ?? defaults.effort;
-				try {
-					checkEffort(m, eff);
-				} catch (err) {
-					throw new ProtocolError("invalid_params", (err as Error).message);
-				}
+				invalidParams(() => checkEffort(m, eff));
 				const registry = buildRegistry([]);
 				session = createSession({
 					registry,
@@ -161,7 +159,24 @@ export function createHost(
 			"session/interrupt"({ cancel_queued }) {
 				return { still_queued: need().interrupt(cancel_queued ?? false) };
 			},
+			"session/set_model"({ model }) {
+				const s = need();
+				invalidParams(() => s.setModel(model));
+				return { model: s.model, effort: s.effort ?? null };
+			},
+			"session/set_effort"({ effort }) {
+				const s = need();
+				invalidParams(() => s.setEffort(effort ?? undefined));
+				return { model: s.model, effort: s.effort ?? null };
+			},
 		};
+	const invalidParams = (f: () => void) => {
+		try {
+			f();
+		} catch (err) {
+			throw new ProtocolError("invalid_params", (err as Error).message);
+		}
+	};
 	const need = () => {
 		if (!session)
 			throw new ProtocolError("no_session", "send session/new first");

@@ -165,3 +165,34 @@ test("an interrupt cancels pending core requests and returns the queue", async (
 	host.receive(JSON.stringify({ kind: "cancel", id: "r999" }));
 	expect(out.filter((m) => m.type === "notice")).toEqual([]);
 });
+
+test("set_model and set_effort answer with the new state; bad values are invalid_params", async () => {
+	const { send, events, ready } = connect();
+	await ready();
+	expect(send("session/set_model", { model: "gpt-4o-mini" })).toMatchObject({
+		ok: true,
+		result: { model: "gpt-4o-mini", effort: null },
+	});
+	expect(send("session/set_model", { model: "nope" })).toEqual(
+		error("invalid_params"),
+	);
+	expect(
+		send("session/set_model", { model: "gpt-4o-mini", role: "cheap" }),
+	).toEqual(error("invalid_request"));
+	send("session/set_model", { model: "gpt-5.6-luna" });
+	expect(send("session/set_effort", { effort: "high" })).toMatchObject({
+		ok: true,
+		result: { model: "gpt-5.6-luna", effort: "high" },
+	});
+	expect(send("session/set_effort", { effort: "minimal" })).toEqual(
+		error("invalid_params"),
+	);
+	expect(send("session/set_effort", { effort: null }).result).toEqual({
+		model: "gpt-5.6-luna",
+		effort: null,
+	});
+	send("session/set_effort", { effort: null });
+	expect(events("notice").map((e) => e.text)).toEqual([
+		"Already using effort default.",
+	]);
+});

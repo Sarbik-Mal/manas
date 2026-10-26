@@ -11,6 +11,8 @@ const MODELS: Record<
 	"gpt-4o-mini": { efforts: [], contextWindow: 128_000 },
 };
 
+export const modelNames = Object.keys(MODELS);
+
 export function capability(model: string) {
 	if (!Object.hasOwn(MODELS, model))
 		throw new Error(`unknown model "${model}"`);

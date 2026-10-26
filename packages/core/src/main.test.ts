@@ -13,3 +13,9 @@ test("--version prints the package version", () => {
 test("unknown flag is an error", () => {
 	expect(run("--nope").exitCode).toBe(1);
 });
+
+test("the chat needs a terminal; piped input is refused", () => {
+	const r = run("hi");
+	expect(r.exitCode).toBe(1);
+	expect(r.stderr.toString()).toContain("manas: needs a terminal");
+});

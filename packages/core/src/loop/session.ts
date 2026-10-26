@@ -1,4 +1,5 @@
 import type { ResponseInputItem } from "openai/resources/responses/responses";
+import { capability, checkEffort } from "../provider/models";
 import type { Usage } from "../provider/openai";
 import type { Registry } from "../tools/registry";
 import { type LoopEvent, runTurn } from "./turn";
@@ -9,6 +10,7 @@ export type Priority = "next" | "later" | "now";
 export type SessionEvent =
 	| { type: "running" }
 	| { type: "idle" }
+	| { type: "notice"; level: "info" | "warn"; text: string }
 	| { type: "prompt_delivered"; promptId: string; text: string }
 	| { type: "text"; messageId: string; delta: string }
 	| { type: "message_done"; messageId: string; text: string }
@@ -23,24 +25,33 @@ export type SessionEvent =
 
 type Queued = { id: string; text: string; priority: Priority };
 
+// memory-management.md §6 and §7: the user may change either mid-chat, and is
+// told plainly what it costs. The core never changes them by itself.
+const costWarning = (what: string) =>
+	"Heads up: your next reply will cost more than usual. OpenAI gives a discount on the parts of this conversation it has already seen. " +
+	`Changing the ${what} makes it start fresh, so the discount is lost for one reply. After that, it comes back.`;
+
 // One conversation: history, a prompt queue and at most one running turn.
 // Prompts run first in, first out; `next` ones are also folded into the
 // running turn between rounds (as in Claude Code).
 export function createSession({
 	registry,
-	model,
-	effort,
+	model: startModel,
+	effort: startEffort,
 	emit,
 	onInterrupt = () => {},
 }: {
 	registry: Registry;
-	model?: string;
+	model: string;
 	effort?: string;
 	emit: (e: SessionEvent) => void;
 	// Called whenever a turn is stopped, so pending requests can be withdrawn.
 	onInterrupt?: () => void;
 }) {
 	const history: ResponseInputItem[] = [];
+	// Read when each turn starts, so a change applies from the next turn.
+	let model = startModel;
+	let effort = startEffort;
 	const queue: Queued[] = [];
 	let running: AbortController | undefined;
 	let prompts = 0;
@@ -121,6 +132,44 @@ export function createSession({
 		},
 		get busy() {
 			return running !== undefined;
+		},
+		get model() {
+			return model;
+		},
+		get effort() {
+			return effort;
+		},
+		// Both throw on an unknown model or an effort the model can't take.
+		setModel(next: string) {
+			checkEffort(next, effort);
+			if (next === model) {
+				emit({ type: "notice", level: "info", text: `Already using ${next}.` });
+				return;
+			}
+			model = next;
+			if (history.length > 0)
+				emit({ type: "notice", level: "warn", text: costWarning("model") });
+		},
+		setEffort(next: string | undefined) {
+			checkEffort(model, next);
+			if (next === effort) {
+				emit({
+					type: "notice",
+					level: "info",
+					text: `Already using effort ${next ?? "default"}.`,
+				});
+				return;
+			}
+			effort = next;
+			if (capability(model).efforts.length === 0) {
+				emit({
+					type: "notice",
+					level: "info",
+					text: `${model} has no reasoning effort; it applies when you switch to a model that has one.`,
+				});
+			} else if (history.length > 0) {
+				emit({ type: "notice", level: "warn", text: costWarning("effort") });
+			}
 		},
 	};
 }
