@@ -6,7 +6,15 @@ import script from "../assets/ps-parser.ps1" with { type: "text" };
 
 export type ParseResult = {
 	errors: string[]; // any → the caller asks
-	commands: { name: string | null; args: string[] }[]; // name null = dynamic → ask
+	// name null = dynamic → ask. `resolved`: aliases followed (dir →
+	// Get-ChildItem); `module`: e.g. Microsoft.PowerShell.Management.
+	commands: {
+		name: string | null;
+		resolved: string | null;
+		module: string | null;
+		type: string;
+		args: string[];
+	}[];
 	redirections: string[]; // file targets
 	invocations: string[]; // .NET method calls → ask
 };

@@ -3,6 +3,7 @@ import { version } from "../../../package.json";
 import { doctor } from "../../doctor";
 import { createHost, type SettingsSource } from "../../host/host";
 import { capability, modelNames } from "../../provider/models";
+import type { Tool } from "../../tools/registry";
 import { HELP, parseCommand } from "./commands";
 import * as r from "./render";
 
@@ -32,6 +33,7 @@ export async function runCli({
 	style,
 	root,
 	resume,
+	tools,
 }: {
 	input: In;
 	output: NodeJS.WritableStream;
@@ -44,6 +46,8 @@ export async function runCli({
 	root?: string;
 	// -c, --resume <id>, or --resume alone (the picker).
 	resume?: { id: string } | "latest" | "pick";
+	// The core's tools; real ones arrive in 1.9, tests bring fakes.
+	tools?: Tool[];
 }): Promise<number> {
 	const write = (s: string) => output.write(s);
 	let atLineStart = true;
@@ -69,22 +73,24 @@ export async function runCli({
 			waiting.get(m.id as string)?.(m as unknown as Response);
 			waiting.delete(m.id as string);
 		} else if (m.kind === "request") {
-			// No approval screen yet (1.7): say so instead of leaving it hanging.
-			host.receive(
-				JSON.stringify({
-					kind: "response",
-					id: m.id,
+			if (m.type === "permission/request") {
+				// One prompt at a time, in the order they came.
+				prompts = prompts.then(() => askPermission(m));
+			} else {
+				reply(m.id as string, {
 					ok: false,
-					error: {
-						code: "unsupported",
-						message: "the CLI can't answer this yet",
-					},
-				}),
-			);
+					error: { code: "unsupported", message: "the CLI can't answer this" },
+				});
+			}
+		} else if (m.kind === "cancel") {
+			cancelled.add(m.id as string);
+			if (asking === m.id) closeAsk?.();
 		} else if (m.kind === "event") {
 			onEvent(m);
 		}
 	};
+	const reply = (id: string, r: Msg) =>
+		host.receive(JSON.stringify({ kind: "response", id, ...r }));
 	const request = (type: string, data: Msg = {}) =>
 		new Promise<Response>((resolve) => {
 			const id = `u${++requests}`;
@@ -93,7 +99,7 @@ export async function runCli({
 		});
 	// A host with no session yet; sessions can be listed now.
 	const open = async () => {
-		host = createHost(onLine, { root, settings });
+		host = createHost(onLine, { root, settings, tools });
 		await request("initialize", {
 			client: { name: "manas-cli", version },
 			capabilities: [],
@@ -234,42 +240,107 @@ export async function runCli({
 	// Typing waits until the turn ends (queueing while typing comes with M10);
 	// only Esc and Ctrl+C are read meanwhile.
 	let quitting = false;
+	let inTurn = false;
+	// Keys go to the approval prompt while it's open, not to Esc/Ctrl+C.
+	const listenForStop = () => {
+		input.setRawMode?.(true);
+		input.resume();
+	};
 	const runPrompt = async (text: string) => {
 		const idle = new Promise<void>((resolve) => {
 			onIdle = resolve;
 		});
 		const onKey = (chunk: Buffer | string) => {
+			if (asking) return;
 			const key = chunk.toString();
 			if (key === CTRL_C && secondCtrlC()) quitting = true;
 			if (key === ESC || key === CTRL_C) void request("session/interrupt");
 		};
-		input.setRawMode?.(true);
 		input.on("data", onKey);
-		input.resume();
+		inTurn = true;
+		listenForStop();
 		try {
 			const res = await request("session/prompt", { text });
 			if (!res.ok) return say(r.red(res.error?.message ?? "error", style));
 			await idle;
 		} finally {
+			inTurn = false;
 			input.off("data", onKey);
 			onIdle = undefined;
 			if (!atLineStart) say("");
 		}
 	};
 
-	// A one-line answer, e.g. the picker's number. Ctrl+C gives "".
+	// A one-line answer, e.g. the picker's number. Esc, Ctrl+C or a cancel
+	// from the core give null.
+	let closeAsk: (() => void) | undefined;
 	const ask = (question: string) =>
-		new Promise<string>((resolve) => {
+		new Promise<string | null>((resolve) => {
 			const rl = createInterface({ input, output, terminal: true });
+			const done = (answer: string | null) => {
+				input.off("keypress", onPress);
+				closeAsk = undefined;
+				rl.close();
+				if (inTurn) listenForStop();
+				resolve(answer);
+			};
+			const onPress = (_: string, key?: { name?: string }) => {
+				if (key?.name === "escape") {
+					write("\n");
+					done(null);
+				}
+			};
+			input.on("keypress", onPress);
+			closeAsk = () => {
+				write(`\n${r.dim("(no longer needed)", style)}\n`);
+				done(null);
+			};
 			rl.on("SIGINT", () => {
-				rl.close();
-				resolve("");
+				write("\n");
+				done(null);
 			});
-			rl.question(question, (answer) => {
-				rl.close();
-				resolve(answer.trim());
-			});
+			rl.question(question, (answer) => done(answer.trim()));
 		});
+
+	// --- Approvals (permission/request) ---
+	let prompts = Promise.resolve();
+	let asking: string | undefined;
+	const cancelled = new Set<string>();
+	async function askPermission(m: Msg) {
+		const id = m.id as string;
+		if (cancelled.has(id)) return;
+		asking = id;
+		const suggestions = m.suggestions as string[];
+		const options = [
+			"Yes",
+			...(suggestions.length > 0
+				? [
+						`Yes, and don't ask again this session for ${suggestions.join(", ")}`,
+					]
+				: []),
+			"No",
+		];
+		say(r.yellow(`Manas wants to ${m.title}`, style));
+		say(r.dim(`  ${m.reason}`, style));
+		say(options.map((o, i) => `  ${i + 1}. ${o}`).join("\n"));
+		let decision: "allow" | "allow_always" | "deny" | undefined;
+		let message: string | null = null;
+		while (!decision) {
+			const a = await ask(`Choose 1-${options.length}: `);
+			const n = Number(a);
+			if (a === null) decision = "deny";
+			else if (n === 1) decision = "allow";
+			else if (n === options.length) {
+				decision = "deny";
+				message =
+					(await ask("Tell Manas what to do instead (Enter to just stop): ")) ||
+					null;
+			} else if (n === 2) decision = "allow_always";
+		}
+		asking = undefined;
+		if (!cancelled.has(id))
+			reply(id, { ok: true, result: { decision, message } });
+	}
 	// The 20 newest sessions in this folder; undefined if none was picked.
 	const pick = async () => {
 		const sessions = (await list()).slice(0, 20);

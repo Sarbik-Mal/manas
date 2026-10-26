@@ -1,4 +1,5 @@
 import {
+	CoreResults,
 	type EventData,
 	type EventType,
 	Line,
@@ -10,13 +11,13 @@ import {
 } from "@manas/protocol";
 import Value from "typebox/value";
 import { version } from "../../package.json";
-import type { LiveSettings } from "../config/settings";
+import type { LiveSettings, Rule } from "../config/settings";
 import {
 	createSession,
 	type Session,
 	type SessionEvent,
 } from "../loop/session";
-import { deniedBy } from "../permissions/rules";
+import { decide, deniedBy } from "../permissions/engine";
 import { checkEffort } from "../provider/models";
 import {
 	DEFAULT_ROOT,
@@ -104,6 +105,23 @@ export function createHost(
 		lastState = state;
 		event("state/changed", { state });
 	};
+	// A core → front end request. It never times out; interrupt cancels it.
+	function request(type: string, data: object): Promise<unknown> {
+		const id = `c${++requests}`;
+		const result = new Promise((resolve, reject) =>
+			pending.set(id, { resolve, reject }),
+		);
+		write({
+			kind: "request",
+			id,
+			type,
+			session_id: sessionId,
+			parent_id: null,
+			...data,
+		});
+		updateState();
+		return result;
+	}
 	const cancelPending = (reason: string) => {
 		for (const [id, p] of pending) {
 			pending.delete(id);
@@ -253,6 +271,8 @@ export function createHost(
 		loaded?: Loaded,
 		warnings: string[] = [],
 	) {
+		// "Yes, and don't ask again this session" rules (saving them: 2.7).
+		const sessionRules: Rule[] = [];
 		// A bare deny removes the tool for the whole session. One added later
 		// keeps the list (and the prompt cache) and is refused by `permit`.
 		const registry = buildRegistry(
@@ -260,9 +280,45 @@ export function createHost(
 		);
 		const s = createSession({
 			registry,
-			permit: (name) => {
-				const rule = deniedBy(name, settings.current.rules);
-				return rule ? `denied by your settings (${rule})` : undefined;
+			permit: async ({ tool, input, callId }) => {
+				const d = await decide(tool, input, {
+					rules: settings.current.rules,
+					session: sessionRules,
+					cwd,
+				});
+				if (d.behavior === "allow") return undefined;
+				if (d.behavior === "deny") return { output: d.reason };
+				let answer: unknown;
+				try {
+					answer = await request("permission/request", {
+						tool_call_id: callId,
+						tool: tool.name,
+						input,
+						title: titleOf(tool, input),
+						reason: d.reason,
+						suggestions: d.suggestions,
+					});
+				} catch {
+					return { output: "interrupted by user" }; // cancelled
+				}
+				if (!Value.Check(CoreResults["permission/request"], answer)) {
+					notice(
+						"error",
+						"The front end sent an invalid permission answer; treated as no.",
+					);
+					return { output: "denied (invalid answer from the front end)" };
+				}
+				const { decision, message } = answer;
+				if (decision === "allow") return undefined;
+				if (decision === "allow_always") {
+					for (const text of d.suggestions)
+						sessionRules.push({ text, base: cwd });
+					return undefined;
+				}
+				if (message) return { output: `denied by the user: ${message}` };
+				// A plain No stops the turn, as in Claude Code (the session
+				// interrupts when this result comes in).
+				return { output: "denied by the user", stop: true };
 			},
 			model,
 			effort,
@@ -393,23 +449,7 @@ export function createHost(
 			if (kind === "cancel") return;
 			notice("error", `unknown line kind ${JSON.stringify(kind)}`);
 		},
-		// A core → front end request. It never times out; interrupt cancels it.
-		request(type: string, data: object): Promise<unknown> {
-			const id = `c${++requests}`;
-			const result = new Promise((resolve, reject) =>
-				pending.set(id, { resolve, reject }),
-			);
-			write({
-				kind: "request",
-				id,
-				type,
-				session_id: sessionId,
-				parent_id: null,
-				...data,
-			});
-			updateState();
-			return result;
-		},
+		request,
 		// The front end went away: stop work, withdraw requests.
 		close() {
 			unsubscribe();
@@ -428,4 +468,13 @@ export function createHost(
 		}
 		return msg as RequestData<T>;
 	}
+}
+
+// One line for the approval prompt.
+function titleOf(tool: Tool, input: unknown) {
+	if (tool.title) return tool.title(input);
+	const command = tool.permission?.command?.(input);
+	if (command !== undefined) return `run: ${command}`;
+	const path = tool.permission?.path?.(input);
+	return path !== undefined ? `${tool.name}: ${path}` : `use ${tool.name}`;
 }

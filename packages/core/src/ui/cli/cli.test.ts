@@ -1,6 +1,8 @@
 import { afterAll, beforeEach, expect, test } from "bun:test";
 import { PassThrough } from "node:stream";
-import { fakeOpenAI, say, tempRoot } from "../../testing/fake-openai";
+import Type from "typebox";
+import { call, fakeOpenAI, say, tempRoot } from "../../testing/fake-openai";
+import { defineTool } from "../../tools/registry";
 import { runCli, sessionsText } from "./cli";
 
 const style = { unicode: true, color: false };
@@ -15,10 +17,12 @@ function startCli({
 	firstPrompt,
 	root = tempRoot(),
 	resume,
+	tools,
 }: {
 	firstPrompt?: string;
 	root?: string;
 	resume?: Parameters<typeof runCli>[0]["resume"];
+	tools?: Parameters<typeof runCli>[0]["tools"];
 } = {}) {
 	const input = new PassThrough();
 	const output = new PassThrough();
@@ -34,6 +38,7 @@ function startCli({
 		style: { unicode: true, color: false },
 		root,
 		resume,
+		tools,
 	});
 	const waitFor = async (pred: () => boolean) => {
 		for (let i = 0; i < 400 && !pred(); i++) await Bun.sleep(5);
@@ -237,4 +242,95 @@ test("manas sessions lists this folder's sessions with their ids", async () => {
 	expect(sessionsText("E:\\x", style, root)).toMatch(
 		/^[\w-]+ · just now · 2 messages · hello there$/,
 	);
+});
+
+// A shell that only echoes, so approvals are tested without running anything.
+const powershell = defineTool({
+	name: "powershell",
+	description: "ps",
+	schema: Type.Object(
+		{ command: Type.String() },
+		{ additionalProperties: false },
+	),
+	deferred: false,
+	readOnly: false,
+	permission: { command: (i) => i.command },
+	run: async ({ command }) => `ran: ${command}`,
+});
+const ps = (command: string) => ({
+	items: [call("powershell", { command })],
+});
+const outputs = () =>
+	bodies.flatMap((b) =>
+		b.input.flatMap((i) =>
+			i.type === "function_call_output" ? [i.output as string] : [],
+		),
+	);
+
+test("approval prompt: Yes runs it; read-only commands never ask", async () => {
+	const cli = startCli({ tools: [powershell] });
+	replies.push(
+		ps("Get-ChildItem"),
+		say("listed"),
+		ps("Remove-Item x"),
+		say("done"),
+	);
+	await cli.type("list\r");
+	await cli.shows("listed");
+	expect(cli.out()).not.toContain("Manas wants to");
+	await cli.type("delete x\r");
+	await cli.shows("Manas wants to run: Remove-Item x");
+	expect(cli.out()).toContain("  1. Yes\n");
+	expect(cli.out()).toContain(
+		"  2. Yes, and don't ask again this session for PowerShell(Remove-Item *)\n  3. No",
+	);
+	await cli.shows("Choose 1-3: ");
+	cli.input.write("1\r");
+	await cli.shows("done");
+	expect(cli.out()).toContain("⎿ ok · ran: Remove-Item x");
+	await cli.type("/exit\r");
+	await cli.exited;
+});
+
+test("approval prompt: 2 remembers for the session; 3 asks for a reason", async () => {
+	const cli = startCli({ tools: [powershell] });
+	replies.push(
+		ps("Remove-Item a"),
+		say("one"),
+		ps("Remove-Item b"),
+		say("two"),
+		ps("git push"),
+		say("three"),
+	);
+	await cli.type("a\r");
+	await cli.shows("Choose 1-3: ");
+	cli.input.write("2\r");
+	await cli.shows("one");
+	await cli.type("b\r");
+	await cli.shows("two");
+	expect(cli.out().split("Manas wants to")).toHaveLength(2);
+
+	await cli.type("push\r");
+	await cli.shows("Manas wants to run: git push");
+	await cli.waitFor(() => cli.out().split("Choose 1-3: ").length === 3);
+	cli.input.write("3\r");
+	await cli.shows("Tell Manas what to do instead");
+	cli.input.write("open a PR instead\r");
+	await cli.shows("three");
+	expect(outputs()).toContain("error: denied by the user: open a PR instead");
+	await cli.type("/exit\r");
+	await cli.exited;
+});
+
+test("approval prompt: Esc is a plain No, which stops the turn", async () => {
+	const cli = startCli({ tools: [powershell] });
+	replies.push(ps("Remove-Item x"));
+	await cli.type("delete x\r");
+	await cli.shows("Choose 1-3: ");
+	cli.input.write("\x1b");
+	await cli.shows("⎿ Interrupted");
+	expect(outputs()).toEqual([]);
+	expect(bodies).toHaveLength(1);
+	await cli.type("/exit\r");
+	await cli.exited;
 });

@@ -13,13 +13,29 @@ export type Tool<S extends TSchema = TSchema> = {
 	// Not in the `tools` list sent to OpenAI; reached through call_tool (4.3).
 	deferred: boolean;
 	readOnly: boolean;
+	// What the permission engine checks: a shell's command or a file's path.
+	permission?: {
+		command?: (input: Static<S>) => string;
+		path?: (input: Static<S>) => string;
+	};
+	// One line for the approval prompt, e.g. "run: Remove-Item build".
+	title?: (input: Static<S>) => string;
 	run(input: Static<S>, ctx: ToolCtx): Promise<string>;
 };
 
 export type Registry = { tools: Map<string, Tool>; specs: ToolSpec[] };
-export type ToolResult = { status: "ok" | "error" | "denied"; output: string };
-// Step 2: the reason a call is refused, if it is.
-export type Permit = (name: string) => string | undefined;
+export type ToolResult = {
+	status: "ok" | "error" | "denied";
+	output: string;
+	// The user said a plain No: the turn stops.
+	stop?: boolean;
+};
+// Step 2: undefined to go ahead, or why not (and whether the turn stops).
+export type Permit = (call: {
+	tool: Tool;
+	input: unknown;
+	callId: string;
+}) => Promise<{ output: string; stop?: boolean } | undefined>;
 
 // Only types `run`'s input from the schema.
 export const defineTool = <S extends TSchema>(tool: Tool<S>) => tool;
@@ -55,7 +71,8 @@ export async function callTool(
 	name: string,
 	args: string,
 	ctx: ToolCtx,
-	permit: Permit = () => undefined,
+	permit: Permit = async () => undefined,
+	callId = "",
 ): Promise<ToolResult> {
 	// 1. Check input.
 	const tool = registry.tools.get(name);
@@ -73,8 +90,14 @@ export async function callTool(
 		);
 	}
 	// 2. Permission. Backup (3) joins in milestone 2.
-	const refused = permit(name);
-	if (refused) return { status: "denied", output: `error: ${refused}` };
+	const refused = await permit({ tool, input, callId });
+	if (refused) {
+		return {
+			status: "denied",
+			output: `error: ${refused.output}`,
+			stop: refused.stop,
+		};
+	}
 	// 4. Run.
 	let output: string;
 	try {

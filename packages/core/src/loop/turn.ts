@@ -19,6 +19,8 @@ export type LoopEvent =
 			callId: string;
 			status: "ok" | "error" | "denied" | "interrupted";
 			output: string;
+			// The user said a plain No: whoever runs the turn stops it.
+			stop?: boolean;
 	  }
 	| {
 			type: "turn_finished";
@@ -125,7 +127,14 @@ export async function* runTurn(
 				input,
 				// Raced, so a tool that ignores `signal` can't hold up an interrupt.
 				result: Promise.race([
-					callTool(registry, call.name, call.arguments, { signal }, permit),
+					callTool(
+						registry,
+						call.name,
+						call.arguments,
+						{ signal },
+						permit,
+						call.call_id,
+					),
 					interrupted.then(
 						() => ({ status: "interrupted", output: INTERRUPTED }) as const,
 					),

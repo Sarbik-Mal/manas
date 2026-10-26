@@ -107,7 +107,10 @@ type Keys = typeof KEYS;
 export type Settings = {
 	[K in keyof Keys]?: Static<Keys[K]>;
 };
-export type Rules = { allow: string[]; ask: string[]; deny: string[] };
+// A rule plus the folder its `/` anchor means: the project for project and
+// flag rules, ~/.manas for user rules (as Claude Code does).
+export type Rule = { text: string; base: string };
+export type Rules = { allow: Rule[]; ask: Rule[]; deny: Rule[] };
 export type Flags = {
 	model?: string;
 	effort?: string;
@@ -142,11 +145,13 @@ export function loadSettings({
 	const warnings: string[] = [];
 	const files = [userFile(home)];
 	const layers: Settings[] = [readLayer(userFile(home), warnings)];
+	const bases = [join(home, ".manas")];
 	const guard = gitGuard(cwd);
 	if (guard) warnings.push(guard);
 	else {
 		files.push(projectFile(cwd));
 		layers.push(readLayer(projectFile(cwd), warnings));
+		bases.push(cwd);
 	}
 	const fromFlags: Settings = {};
 	if (flags.model) fromFlags.models = { main: flags.model };
@@ -156,15 +161,19 @@ export function loadSettings({
 		checkRules("flags", fromFlags.permissions);
 	}
 	layers.push(fromFlags);
+	bases.push(cwd);
 
-	const settings = merge(layers);
-	const p = settings.permissions ?? {};
-	return {
-		settings,
-		rules: { allow: p.allow ?? [], ask: p.ask ?? [], deny: p.deny ?? [] },
-		warnings,
-		files,
-	};
+	const rules: Rules = { allow: [], ask: [], deny: [] };
+	layers.forEach((layer, i) => {
+		for (const list of ["allow", "ask", "deny"] as const) {
+			for (const text of layer.permissions?.[list] ?? []) {
+				const base = bases[i];
+				const same = (r: Rule) => r.text === text && r.base === base;
+				if (!rules[list].some(same)) rules[list].push({ text, base });
+			}
+		}
+	});
+	return { settings: merge(layers), rules, warnings, files };
 }
 
 // One file. Missing: empty. Unparseable or bad `permissions`: fatal. Any

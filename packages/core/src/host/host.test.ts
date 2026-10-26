@@ -295,8 +295,14 @@ const tool = (name: string) =>
 		readOnly: true,
 		run: async () => `${name} ran`,
 	});
-const tools = [tool("read"), tool("grep")];
-const rules = (deny: string[]) => ({ rules: { allow: [], ask: [], deny } });
+const tools = [tool("read"), tool("lsp")];
+const rules = (deny: string[]) => ({
+	rules: {
+		allow: [],
+		ask: [],
+		deny: deny.map((text) => ({ text, base: "." })),
+	},
+});
 
 test("a bare deny at start removes the tool from the list", async () => {
 	const c = connect(undefined, {
@@ -305,37 +311,37 @@ test("a bare deny at start removes the tool from the list", async () => {
 	});
 	fake.replies.push(say("ok"));
 	await c.ready();
-	expect(c.events("session/started")[0].tools).toEqual(["grep"]);
+	expect(c.events("session/started")[0].tools).toEqual(["lsp"]);
 	c.send("session/prompt", { text: "hi" });
 	await c.waitFor(() => c.states().at(-1) === "idle" && c.states().length > 2);
 	expect(
 		(fake.bodies[0].tools as { name: string }[]).map((t) => t.name),
-	).toEqual(["grep"]);
+	).toEqual(["lsp"]);
 });
 
 test("a deny added mid-session keeps the list but refuses the call", async () => {
 	const settings = fakeSettings();
 	const c = connect(undefined, { tools, settings });
 	await c.ready();
-	expect(c.events("session/started")[0].tools).toEqual(["read", "grep"]);
+	expect(c.events("session/started")[0].tools).toEqual(["read", "lsp"]);
 	settings.reload(rules(["Read"]));
 	expect(c.events("notice").at(-1)).toMatchObject({
 		level: "info",
 		text: "Settings reloaded.",
 	});
 	fake.replies.push(
-		{ items: [call("read", {}), call("grep", {})] },
+		{ items: [call("read", {}), call("lsp", {})] },
 		say("done"),
 	);
 	c.send("session/prompt", { text: "go" });
 	await c.waitFor(() => c.events("turn/finished").length === 1);
 	expect(c.events("tool/finished").map((e) => [e.status, e.output])).toEqual([
 		["denied", "error: denied by your settings (Read)"],
-		["ok", "grep ran"],
+		["ok", "lsp ran"],
 	]);
 	expect(
 		(fake.bodies[1].tools as { name: string }[]).map((t) => t.name),
-	).toEqual(["read", "grep"]);
+	).toEqual(["read", "lsp"]);
 });
 
 test("a broken reload is reported, and the old rules still apply", async () => {
@@ -384,4 +390,144 @@ test("settings give the model and effort; bad ones and warnings become notices",
 		'settings: unknown model "nope" (ignored)',
 		expect.stringContaining('settings: effort "minimal" not supported'),
 	]);
+});
+
+// A shell that only echoes, so approvals are tested without running anything.
+const powershell = defineTool({
+	name: "powershell",
+	description: "ps",
+	schema: Type.Object(
+		{ command: Type.String() },
+		{ additionalProperties: false },
+	),
+	deferred: false,
+	readOnly: false,
+	permission: { command: (i) => i.command },
+	run: async ({ command }) => `ran: ${command}`,
+});
+const ps = (command: string) => ({ items: [call("powershell", { command })] });
+const answer = (c: ReturnType<typeof connect>, id: string, result: object) =>
+	c.host.receive(JSON.stringify({ kind: "response", id, ok: true, result }));
+const asked = (c: ReturnType<typeof connect>) =>
+	c.out.filter((m) => m.kind === "request" && m.type === "permission/request");
+
+test("the 1.7 check: Get-ChildItem runs; Remove-Item asks", async () => {
+	const c = connect(undefined, { tools: [powershell] });
+	await c.ready();
+	fake.replies.push(
+		ps("Get-ChildItem"),
+		say("listed"),
+		ps("Remove-Item x"),
+		say("deleted"),
+	);
+	c.send("session/prompt", { text: "list" });
+	await c.waitFor(() => c.events("turn/finished").length === 1);
+	expect(c.events("tool/finished")[0]).toMatchObject({
+		status: "ok",
+		output: "ran: Get-ChildItem",
+	});
+	expect(asked(c)).toEqual([]);
+
+	c.send("session/prompt", { text: "delete x" });
+	await c.waitFor(() => asked(c).length === 1);
+	expect(asked(c)[0]).toMatchObject({
+		tool: "powershell",
+		input: { command: "Remove-Item x" },
+		title: "run: Remove-Item x",
+		reason: "this command can change things",
+		suggestions: ["PowerShell(Remove-Item *)"],
+	});
+	expect(c.states().at(-1)).toBe("waiting_for_user");
+	answer(c, asked(c)[0].id, { decision: "allow" });
+	await c.waitFor(() => c.events("turn/finished").length === 2);
+	expect(c.events("tool/finished")[1]).toMatchObject({
+		status: "ok",
+		output: "ran: Remove-Item x",
+	});
+});
+
+test("Yes this session: the same kind of command doesn't ask again", async () => {
+	const c = connect(undefined, { tools: [powershell] });
+	await c.ready();
+	fake.replies.push(
+		ps("Remove-Item a"),
+		say("ok"),
+		ps("Remove-Item b"),
+		say("ok"),
+	);
+	c.send("session/prompt", { text: "1" });
+	await c.waitFor(() => asked(c).length === 1);
+	answer(c, asked(c)[0].id, { decision: "allow_always" });
+	await c.waitFor(() => c.events("turn/finished").length === 1);
+	c.send("session/prompt", { text: "2" });
+	await c.waitFor(() => c.events("turn/finished").length === 2);
+	expect(asked(c)).toHaveLength(1);
+	expect(c.events("tool/finished").map((e) => e.status)).toEqual(["ok", "ok"]);
+});
+
+test("No with a reason: the model is told and goes on", async () => {
+	const c = connect(undefined, { tools: [powershell] });
+	await c.ready();
+	fake.replies.push(ps("Remove-Item x"), say("ok, moving it instead"));
+	c.send("session/prompt", { text: "delete x" });
+	await c.waitFor(() => asked(c).length === 1);
+	answer(c, asked(c)[0].id, {
+		decision: "deny",
+		message: "move it to old/ instead",
+	});
+	await c.waitFor(() => c.events("turn/finished").length === 1);
+	expect(c.events("tool/finished")[0]).toMatchObject({
+		status: "denied",
+		output: "error: denied by the user: move it to old/ instead",
+	});
+	expect(c.events("turn/finished")[0].stop_reason).toBe("done");
+	expect(fake.bodies).toHaveLength(2);
+});
+
+test("a plain No stops the turn; a queued prompt still runs", async () => {
+	const c = connect(undefined, { tools: [powershell] });
+	await c.ready();
+	fake.replies.push(ps("Remove-Item x"), say("next one"));
+	c.send("session/prompt", { text: "delete x" });
+	await c.waitFor(() => asked(c).length === 1);
+	c.send("session/prompt", { text: "then this", priority: "later" });
+	answer(c, asked(c)[0].id, { decision: "deny" });
+	await c.waitFor(() => c.events("turn/finished").length === 2);
+	expect(c.events("tool/finished")[0]).toMatchObject({
+		status: "denied",
+		output: "error: denied by the user",
+	});
+	expect(c.events("turn/finished").map((e) => e.stop_reason)).toEqual([
+		"interrupted",
+		"done",
+	]);
+	expect(fake.bodies).toHaveLength(2);
+});
+
+test("interrupt while asking cancels the request; a bad answer counts as no", async () => {
+	const a = connect(undefined, { tools: [powershell] });
+	await a.ready();
+	fake.replies.push(ps("Remove-Item x"));
+	a.send("session/prompt", { text: "delete x" });
+	await a.waitFor(() => asked(a).length === 1);
+	a.send("session/interrupt");
+	expect(a.out).toContainEqual({
+		kind: "cancel",
+		id: asked(a)[0].id,
+		reason: "interrupted",
+	});
+	await a.waitFor(() => a.events("turn/finished").length === 1);
+	expect(a.events("tool/finished")[0].status).toBe("interrupted");
+
+	const b = connect(undefined, { tools: [powershell] });
+	await b.ready();
+	fake.replies.push(ps("Remove-Item x"), say("ok"));
+	b.send("session/prompt", { text: "delete x" });
+	await b.waitFor(() => asked(b).length === 1);
+	answer(b, asked(b)[0].id, { decision: "sure" });
+	await b.waitFor(() => b.events("turn/finished").length === 1);
+	expect(b.events("tool/finished")[0].status).toBe("denied");
+	expect(b.events("notice").at(-1)?.text).toContain(
+		"invalid permission answer",
+	);
 });

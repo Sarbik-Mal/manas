@@ -37,7 +37,7 @@ test("no files: nothing set, no warnings", () => {
 });
 
 test("layers: flags > project > user; objects merge per key; lists join", () => {
-	const { load } = setup(
+	const { load, home, cwd } = setup(
 		`{
 			// JSONC: comments and trailing commas are fine
 			"effort": "low",
@@ -59,10 +59,16 @@ test("layers: flags > project > user; objects merge per key; lists join", () => 
 		cheap: "gpt-4o-mini",
 	});
 	expect(settings.limits).toEqual({ parallelAgents: 2, scratchpadMB: 10 });
+	const userBase = join(home, ".manas");
 	expect(rules).toEqual({
-		allow: ["Grep"],
+		allow: [{ text: "Grep", base: userBase }],
 		ask: [],
-		deny: ["Read", "PowerShell(rm *)", "web_fetch"],
+		deny: [
+			{ text: "Read", base: userBase },
+			{ text: "PowerShell(rm *)", base: cwd },
+			{ text: "Read", base: cwd },
+			{ text: "web_fetch", base: cwd },
+		],
 	});
 });
 
@@ -151,13 +157,13 @@ test("live: a change is picked up; a broken file keeps the last good settings", 
 	writeFileSync(userFile(home), '{ "permissions": { "deny": ["Read"] } }');
 	await waitFor(1);
 	expect(events[0]).toEqual({ ok: true });
-	expect(live.current.rules.deny).toEqual(["Read"]);
+	expect(live.current.rules.deny.map((r) => r.text)).toEqual(["Read"]);
 	writeFileSync(userFile(home), '{ "permissions": { "deny": ["Read" } }');
 	await waitFor(2);
 	expect(events[1]).toMatchObject({
 		ok: false,
 		error: expect.stringContaining("line 1"),
 	});
-	expect(live.current.rules.deny).toEqual(["Read"]);
+	expect(live.current.rules.deny.map((r) => r.text)).toEqual(["Read"]);
 	live.stop();
 });

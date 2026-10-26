@@ -167,11 +167,16 @@ test("step 2: a refused call never runs", async () => {
 		"read",
 		JSON.stringify({ path: "a", limit: null, opts: null }),
 		{ signal },
-		(name) => (name === "read" ? "denied by your settings (Read)" : undefined),
+		async ({ tool, callId }) =>
+			tool.name === "read" && callId === "c9"
+				? { output: "denied by the user", stop: true }
+				: undefined,
+		"c9",
 	);
 	expect(r).toEqual({
 		status: "denied",
-		output: "error: denied by your settings (Read)",
+		output: "error: denied by the user",
+		stop: true,
 	});
 	expect(ran).toBe(0);
 });

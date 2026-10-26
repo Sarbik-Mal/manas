@@ -57,3 +57,16 @@ test("100 parses average well under 50 ms", async () => {
 		await parsePowerShell(`Get-Item file${i}.txt | Remove-Item`);
 	expect((performance.now() - start) / 100).toBeLessThan(50);
 });
+
+test("aliases resolve to their cmdlet and module; programs keep their name", async () => {
+	const r = await parsePowerShell("dir; rm x; npm test; git status; nope-nope");
+	expect(r.commands.map((c) => [c.name, c.resolved, c.module, c.type])).toEqual(
+		[
+			["dir", "Get-ChildItem", "Microsoft.PowerShell.Management", "Alias"],
+			["rm", "Remove-Item", "Microsoft.PowerShell.Management", "Alias"],
+			["npm", "npm", expect.any(String), expect.any(String)],
+			["git", "git", expect.any(String), "Application"],
+			["nope-nope", "nope-nope", null, "NotFound"],
+		],
+	);
+});

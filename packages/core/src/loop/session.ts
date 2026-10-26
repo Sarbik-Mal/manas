@@ -118,6 +118,9 @@ export function createSession({
 					emit({ ...e, turnId });
 				} else {
 					emit(e);
+					// Stopped here, before the loop moves on: the rest of the
+					// turn ends `interrupted`, and queued prompts still run.
+					if (e.type === "tool_finished" && e.stop) stop();
 				}
 			}
 		}

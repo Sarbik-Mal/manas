@@ -128,6 +128,33 @@ export const Usage = Type.Object({
 });
 
 // Core → front end events: their fields.
+// Core → front end requests: their fields, and what the response's `result`
+// holds. Front ends answer; requests never time out but can be cancelled.
+export const CoreRequests = {
+	// A tool call needs the user's yes or no. `suggestions`: the rules "Yes,
+	// and don't ask again this session" would add.
+	"permission/request": Type.Object({
+		tool_call_id: Type.String(),
+		tool: Type.String(),
+		input: Type.Unknown(),
+		title: Type.String(),
+		reason: Type.String(),
+		suggestions: Type.Array(Type.String()),
+	}),
+};
+export const CoreResults = {
+	// `deny` with a `message`: the model is told and keeps going. Without one,
+	// the turn stops.
+	"permission/request": Type.Object({
+		decision: Type.Union([
+			Type.Literal("allow"),
+			Type.Literal("allow_always"),
+			Type.Literal("deny"),
+		]),
+		message: Nullable(Type.String()),
+	}),
+};
+
 export const Events = {
 	"session/started": Type.Object({
 		model: Type.String(),

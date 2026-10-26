@@ -7,6 +7,31 @@ $utf8 = New-Object System.Text.UTF8Encoding $false
 [Console]::OutputEncoding = $utf8
 $L = [System.Management.Automation.Language.Ast].Namespace
 
+# What a command name really is: aliases followed (dir -> Get-ChildItem), plus
+# its module, so only built-in Microsoft cmdlets count as read-only. Cached.
+$known = @{}
+function Resolve-Name($name) {
+	if ($null -eq $name -or $name -match '[*?\[]') { return @{ resolved = $name; module = $null; type = 'NotFound' } }
+	$key = $name.ToLowerInvariant()
+	if (-not $known.ContainsKey($key)) {
+		$info = @{ resolved = $name; module = $null; type = 'NotFound' }
+		$c = Get-Command -Name $name -ErrorAction SilentlyContinue | Select-Object -First 1
+		if ($c) {
+			$info.type = "$($c.CommandType)"
+			# Follow an alias by its target's name; its module may not be loaded yet.
+			if ($c.CommandType -eq 'Alias') {
+				$t = Get-Command -Name $c.Definition -ErrorAction SilentlyContinue | Select-Object -First 1
+				if ($t) { $c = $t }
+			}
+			# Only cmdlets and functions get their canonical name; npm stays npm.
+			if ("$($c.CommandType)" -in 'Cmdlet', 'Function') { $info.resolved = $c.Name }
+			$info.module = $c.ModuleName
+		}
+		$known[$key] = $info
+	}
+	$known[$key]
+}
+
 while ($null -ne ($line = [Console]::In.ReadLine())) {
 	$id = $null
 	try {
@@ -19,8 +44,13 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
 
 		# Every command anywhere: pipelines, chains, $(...), script blocks.
 		$commands = @(foreach ($c in (& $find 'CommandAst')) {
+			$name = $c.GetCommandName()  # null when dynamic, e.g. & $tool
+			$r = Resolve-Name $name
 			@{
-				name = $c.GetCommandName()  # null when dynamic, e.g. & $tool
+				name = $name
+				resolved = $r.resolved
+				module = $r.module
+				type = $r.type
 				args = @($c.CommandElements | Select-Object -Skip 1 | ForEach-Object { $_.Extent.Text })
 			}
 		})
