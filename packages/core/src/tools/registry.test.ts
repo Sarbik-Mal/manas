@@ -44,12 +44,13 @@ const boom = tool("boom", Type.Object({}, strict), {
 });
 const registry = buildRegistry([read, later, boom]);
 const signal = new AbortController().signal;
+const ctx = { signal, cwd: process.cwd(), denied: () => undefined };
 const call = (name: string, args: unknown) =>
 	callTool(
 		registry,
 		name,
 		typeof args === "string" ? args : JSON.stringify(args),
-		{ signal },
+		ctx,
 	);
 
 test("bad arguments come back as a clear error, and the tool never runs", async () => {
@@ -166,7 +167,7 @@ test("step 2: a refused call never runs", async () => {
 		registry,
 		"read",
 		JSON.stringify({ path: "a", limit: null, opts: null }),
-		{ signal },
+		ctx,
 		async ({ tool, callId }) =>
 			tool.name === "read" && callId === "c9"
 				? { output: "denied by the user", stop: true }
@@ -178,5 +179,27 @@ test("step 2: a refused call never runs", async () => {
 		output: "error: denied by the user",
 		stop: true,
 	});
+	expect(ran).toBe(0);
+});
+
+test("step 1 ends with the tool's own check: refused before any permission", async () => {
+	ran = 0;
+	let asked = 0;
+	const picky = tool("picky", Type.Object({ cmd: Type.String() }, strict), {
+		validate: async ({ cmd }) =>
+			cmd === "rm" ? "rm can change things" : undefined,
+	});
+	const r = await callTool(
+		buildRegistry([picky]),
+		"picky",
+		JSON.stringify({ cmd: "rm" }),
+		ctx,
+		async () => {
+			asked++;
+			return undefined;
+		},
+	);
+	expect(r).toEqual({ status: "error", output: "error: rm can change things" });
+	expect(asked).toBe(0);
 	expect(ran).toBe(0);
 });

@@ -18,7 +18,7 @@ import {
 	type Session,
 	type SessionEvent,
 } from "../loop/session";
-import { decide, deniedBy } from "../permissions/engine";
+import { decide, deniedBy, deniedPath } from "../permissions/engine";
 import { checkEffort } from "../provider/models";
 import { preloadEnv } from "../safety/env-preload";
 import { restoreDeep, restoreStream, Vault } from "../safety/scrub";
@@ -69,7 +69,7 @@ export function createHost(
 		root?: string;
 		// The merged settings files, reloaded when they change (1.6).
 		settings?: SettingsSource;
-		// Every tool the core has; real ones arrive in 1.9.
+		// Every tool the core has (`coreTools()`); tests bring their own.
 		tools?: Tool[];
 	} = {},
 ) {
@@ -339,6 +339,10 @@ export function createHost(
 			registry,
 			vault: v,
 			ready,
+			toolCtx: {
+				cwd,
+				denied: (path) => deniedPath(path, settings.current.rules, cwd),
+			},
 			permit: async ({ tool, input, callId }) => {
 				const d = await decide(tool, input, {
 					rules: settings.current.rules,

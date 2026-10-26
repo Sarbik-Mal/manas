@@ -5,6 +5,7 @@ import { doctor } from "./doctor";
 import { createHost, type SettingsSource } from "./host/host";
 import { enableDebugLog, setLogScrubber } from "./log/debug";
 import { scrubForLog } from "./safety/scrub";
+import { coreTools } from "./tools";
 import { runCli, sessionsText } from "./ui/cli/cli";
 import { detectStyle } from "./ui/cli/render";
 
@@ -76,6 +77,7 @@ try {
 			settings: live,
 			firstPrompt: positionals.join(" ") || undefined,
 			style: detectStyle(process.env),
+			tools: coreTools(),
 			resume: pick
 				? "pick"
 				: values.resume
@@ -96,6 +98,7 @@ try {
 async function stdio(settings: SettingsSource) {
 	const host = createHost((line) => process.stdout.write(`${line}\n`), {
 		settings,
+		tools: coreTools(),
 	});
 	for await (const line of console) if (line.trim()) host.receive(line);
 	host.close();

@@ -8,6 +8,7 @@ import {
 	callTool,
 	type Permit,
 	type Registry,
+	type SessionCtx,
 } from "../tools/registry";
 
 export type LoopEvent =
@@ -47,6 +48,7 @@ export async function* runTurn(
 		signal = new AbortController().signal,
 		inject = () => [],
 		permit,
+		ctx = { cwd: process.cwd(), denied: () => undefined },
 		...opts
 	}: {
 		model?: string;
@@ -55,6 +57,8 @@ export async function* runTurn(
 		signal?: AbortSignal;
 		inject?: () => string[];
 		permit?: Permit;
+		// What every tool call gets besides the signal.
+		ctx?: SessionCtx;
 	} = {},
 ): AsyncGenerator<LoopEvent> {
 	const usage: Usage = { input: 0, cached: 0, output: 0, reasoning: 0 };
@@ -131,7 +135,7 @@ export async function* runTurn(
 						registry,
 						call.name,
 						call.arguments,
-						{ signal },
+						{ ...ctx, signal },
 						permit,
 						call.call_id,
 					),

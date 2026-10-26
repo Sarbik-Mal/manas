@@ -128,6 +128,36 @@ export function deniedBy(name: string, rules: Rules) {
 	})?.text;
 }
 
+// The deny rule that stops reading `path`, if any. Search tools drop such
+// files from their results, as Claude Code applies Read rules to Grep and Glob.
+export function deniedPath(
+	path: string,
+	rules: Rules,
+	cwd: string,
+	home = homedir(),
+) {
+	const target = posix(resolve(cwd, path));
+	return rules.deny.find((rule) => {
+		const r = parseRule(rule.text);
+		return (
+			r?.specifier !== undefined &&
+			covers(r.tool, "read") &&
+			pathMatches(r.specifier, target, rule.base, cwd, home)
+		);
+	})?.text;
+}
+
+// Why `command` isn't read-only, or undefined if every part is.
+export async function notReadOnly(command: string) {
+	const parsed = await parse(command);
+	const unclear = unclearReason(parsed);
+	if (unclear) return unclear;
+	const open = parsed.commands.filter((p) => !readOnly(p));
+	if (open.length === 0) return undefined;
+	const names = open.map((p) => p.resolved ?? p.name);
+	return `${[...new Set(names)].join(", ")} can change things or read secrets`;
+}
+
 async function parse(command: string): Promise<ParseResult> {
 	try {
 		return await parsePowerShell(command);

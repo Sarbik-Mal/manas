@@ -47,7 +47,7 @@ export async function runCli({
 	root?: string;
 	// -c, --resume <id>, or --resume alone (the picker).
 	resume?: { id: string } | "latest" | "pick";
-	// The core's tools; real ones arrive in 1.9, tests bring fakes.
+	// The core's tools (`coreTools()`); tests bring their own.
 	tools?: Tool[];
 }): Promise<number> {
 	const write = (s: string) => output.write(s);

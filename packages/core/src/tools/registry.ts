@@ -4,7 +4,16 @@ import type { ToolSpec } from "../provider/openai";
 
 // What every tool gets. Grows as parts are built: session, ask, vault,
 // backups, scratch, emit (architecture.md 0b, rule 2).
-export type ToolCtx = { signal: AbortSignal };
+export type ToolCtx = {
+	signal: AbortSignal;
+	// The project folder; relative paths resolve against it.
+	cwd: string;
+	// The deny rule covering an absolute path for reading, if any. Search
+	// results drop such files (as Claude Code does for Grep and Glob).
+	denied: (path: string) => string | undefined;
+};
+// What a session hands every call; `signal` is per turn.
+export type SessionCtx = Omit<ToolCtx, "signal">;
 
 export type Tool<S extends TSchema = TSchema> = {
 	name: string;
@@ -20,6 +29,8 @@ export type Tool<S extends TSchema = TSchema> = {
 	};
 	// One line for the approval prompt, e.g. "run: Remove-Item build".
 	title?: (input: Static<S>) => string;
+	// Step 1, after the schema: why this input is refused, before any prompt.
+	validate?: (input: Static<S>, ctx: ToolCtx) => Promise<string | undefined>;
 	run(input: Static<S>, ctx: ToolCtx): Promise<string>;
 };
 
@@ -88,6 +99,12 @@ export async function callTool(
 		return error(
 			`invalid input for ${name}: ${describeErrors(errors).join("; ")}`,
 		);
+	}
+	try {
+		const invalid = await tool.validate?.(input, ctx);
+		if (invalid) return error(invalid);
+	} catch (err) {
+		return error((err as Error).message);
 	}
 	// 2. Permission. Backup (3) joins in milestone 2.
 	const refused = await permit({ tool, input, callId });

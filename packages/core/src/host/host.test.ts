@@ -11,6 +11,7 @@ import {
 	say,
 	tempRoot,
 } from "../testing/fake-openai";
+import { coreTools } from "../tools";
 import { defineTool } from "../tools/registry";
 import { createHost } from "./host";
 
@@ -640,4 +641,67 @@ test("resume brings the vault back; an unreadable vault starts fresh with a noti
 	expect(c.events("prompt/delivered")[0].text).toBe(
 		"my key [REDACTED:api_key#1]",
 	);
+});
+
+// --- 1.9: the real read-only tools ---
+
+test("the real tools run in the session's folder, and a Read deny filters grep", async () => {
+	const project = tempRoot();
+	writeFileSync(join(project, "app.ts"), "const needle = 1;\n");
+	writeFileSync(join(project, "secret.txt"), "needle in a secret\n");
+	const c = connect(undefined, {
+		tools: coreTools(),
+		settings: fakeSettings({
+			rules: {
+				allow: [],
+				ask: [],
+				deny: [{ text: "Read(secret.txt)", base: project }],
+			},
+		}),
+	});
+	const nulls = (keys: string[]) =>
+		Object.fromEntries(keys.map((k) => [k, null]));
+	fake.replies.push(
+		{
+			items: [
+				call("read", { file_path: "app.ts", offset: null, limit: null }),
+				call("grep", {
+					...nulls(["path", "glob", "type", "output_mode", "-A", "-B", "-C"]),
+					...nulls([
+						"context",
+						"-i",
+						"-n",
+						"-o",
+						"head_limit",
+						"offset",
+						"multiline",
+					]),
+					pattern: "needle",
+				}),
+				call("read", { file_path: "secret.txt", offset: null, limit: null }),
+			],
+		},
+		say("done"),
+	);
+	await c.ready(project);
+	expect(c.events("session/started")[0].tools).toEqual([
+		"read",
+		"grep",
+		"glob",
+		"powershell",
+	]);
+	c.send("session/prompt", { text: "look around" });
+	await c.waitFor(() => c.events("turn/finished").length === 1);
+	// Finished events come as each tool finishes; match them to the calls.
+	const [r, g, s] = c
+		.events("tool/started")
+		.map((e) =>
+			c.events("tool/finished").find((f) => f.tool_call_id === e.tool_call_id),
+		);
+	expect(r).toMatchObject({
+		status: "ok",
+		output: "     1\tconst needle = 1;",
+	});
+	expect(g).toMatchObject({ status: "ok", output: "app.ts" });
+	expect(s).toMatchObject({ status: "denied" });
 });
