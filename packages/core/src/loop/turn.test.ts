@@ -101,7 +101,7 @@ test("usage is summed over the turn's rounds", async () => {
 	});
 });
 
-test("calls run in parallel, results come back in call order", async () => {
+test("calls run in parallel; events in finish order, results in call order", async () => {
 	let running = 0;
 	let peak = 0;
 	const wait = tool(
@@ -119,8 +119,11 @@ test("calls run in parallel, results come back in call order", async () => {
 		say("ok"),
 	);
 	const history: ResponseInputItem[] = [];
-	await drain(runTurn(history, "go", tools(wait)));
+	const events = await drain(runTurn(history, "go", tools(wait)));
 	expect(peak).toBe(2);
+	expect(
+		events.flatMap((e) => (e.type === "tool_finished" ? [e.output] : [])),
+	).toEqual(["waited 5", "waited 50"]);
 	expect(outputs(history)).toEqual(["waited 50", "waited 5"]);
 });
 

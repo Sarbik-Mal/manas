@@ -67,6 +67,8 @@ export async function* runTurn(
 				yield { type: "text", delta: r.value };
 			}
 			output = r.value.output;
+			// ponytail: an interrupted reply never gets usage, so it adds 0 though
+			// it is billed; estimate it with the cost display (4.6).
 			for (const k of Object.keys(usage) as (keyof Usage)[]) {
 				usage[k] += r.value.usage?.[k] ?? 0;
 			}
@@ -131,16 +133,21 @@ export async function* runTurn(
 				input,
 			};
 		}
-		// ponytail: finished events come in call order, so a fast tool waits for a
-		// slow one before it; yield in completion order if the UI needs it.
+		// Events as each tool finishes; results go into history in call order.
+		const waiting = new Map(
+			started.map((s, i) => [i, s.result.then((r) => ({ i, r }))]),
+		);
+		while (waiting.size > 0) {
+			const { i, r } = await Promise.race(waiting.values());
+			waiting.delete(i);
+			yield { type: "tool_finished", callId: started[i].call.call_id, ...r };
+		}
 		for (const { call, result } of started) {
-			const r = await result;
 			history.push({
 				type: "function_call_output",
 				call_id: call.call_id,
-				output: r.output,
+				output: (await result).output,
 			});
-			yield { type: "tool_finished", callId: call.call_id, ...r };
 		}
 		if (signal.aborted) {
 			history.push(note);
