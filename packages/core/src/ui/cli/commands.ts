@@ -1,11 +1,11 @@
 // Slash commands of the plain CLI. Anything else starting with "/" is
 // unknown, and never sent to the model.
 export type Command =
-	| { name: "help" | "exit" | "clear" | "doctor" }
+	| { name: "help" | "exit" | "clear" | "doctor" | "resume" }
 	| { name: "model" | "effort"; arg?: string }
 	| { name: "unknown"; text: string };
 
-const SIMPLE = new Set(["help", "exit", "clear", "doctor"]);
+const SIMPLE = new Set(["help", "exit", "clear", "doctor", "resume"]);
 
 // undefined: the line is a prompt, not a command.
 export function parseCommand(line: string): Command | undefined {
@@ -29,6 +29,7 @@ Commands
   /model [name]     show or switch the model
   /effort [level]   show or switch the reasoning effort ("default" resets it)
   /clear            start a new conversation
+  /resume           pick a saved conversation to continue
   /doctor           check the setup
   /help             this help
   /exit             quit`;

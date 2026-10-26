@@ -1,6 +1,7 @@
 import type { ResponseInputItem } from "openai/resources/responses/responses";
 import { capability, checkEffort } from "../provider/models";
 import type { Usage } from "../provider/openai";
+import { CUT_OFF, type Store, textOf } from "../session/store";
 import type { Registry } from "../tools/registry";
 import { type LoopEvent, runTurn } from "./turn";
 
@@ -40,15 +41,29 @@ export function createSession({
 	effort: startEffort,
 	emit,
 	onInterrupt = () => {},
+	store,
+	items = [],
 }: {
 	registry: Registry;
 	model: string;
 	effort?: string;
+	// Where history is saved (1.5); none in tests that don't need it.
+	store?: Store;
+	// A resumed session's history, already on disk.
+	items?: ResponseInputItem[];
 	emit: (e: SessionEvent) => void;
 	// Called whenever a turn is stopped, so pending requests can be withdrawn.
 	onInterrupt?: () => void;
 }) {
-	const history: ResponseInputItem[] = [];
+	const history: ResponseInputItem[] = [...items];
+	// Every item the loop adds is saved before it's kept, so a killed process
+	// loses at most the line being written. One spot covers every push.
+	if (store) {
+		history.push = (...added) => {
+			for (const i of added) store.item(i);
+			return Array.prototype.push.apply(history, added);
+		};
+	}
 	// Read when each turn starts, so a change applies from the next turn.
 	let model = startModel;
 	let effort = startEffort;
@@ -95,6 +110,7 @@ export function createSession({
 					emit({ ...e, messageId: messageId ?? `m${++messages}` });
 					messageId = undefined;
 				} else if (e.type === "turn_finished") {
+					store?.usage(turnId, e.usage);
 					emit({ ...e, turnId });
 				} else {
 					emit(e);
@@ -130,6 +146,10 @@ export function createSession({
 			if (running) stop();
 			return queue.map((q) => q.id);
 		},
+		// The saved conversation as events, so a front end can show it again.
+		replay() {
+			return replayEvents(history);
+		},
 		get busy() {
 			return running !== undefined;
 		},
@@ -147,6 +167,7 @@ export function createSession({
 				return;
 			}
 			model = next;
+			store?.set({ model: next });
 			if (history.length > 0)
 				emit({ type: "notice", level: "warn", text: costWarning("model") });
 		},
@@ -161,6 +182,7 @@ export function createSession({
 				return;
 			}
 			effort = next;
+			store?.set({ effort: next ?? null });
 			if (capability(model).efforts.length === 0) {
 				emit({
 					type: "notice",
@@ -175,3 +197,59 @@ export function createSession({
 }
 
 export type Session = ReturnType<typeof createSession>;
+
+const zero = { input: 0, cached: 0, output: 0, reasoning: 0 };
+
+// Rebuilds what the screen showed from history. Reasoning items are skipped.
+export function replayEvents(history: ResponseInputItem[]): SessionEvent[] {
+	const out: SessionEvent[] = [];
+	let n = 0;
+	for (const i of history) {
+		if (i.type === "function_call") {
+			let input: unknown = i.arguments;
+			try {
+				input = JSON.parse(i.arguments);
+			} catch {}
+			out.push({
+				type: "tool_started",
+				callId: i.call_id,
+				name: i.name,
+				input,
+			});
+		} else if (i.type === "function_call_output") {
+			const output =
+				typeof i.output === "string" ? i.output : JSON.stringify(i.output);
+			const status = output.startsWith("error:")
+				? "error"
+				: output === "interrupted by user" || output === CUT_OFF
+					? "interrupted"
+					: "ok";
+			out.push({
+				type: "tool_finished",
+				callId: String(i.call_id),
+				status,
+				output,
+			});
+		} else if ("role" in i && i.role === "user") {
+			out.push({
+				type: "prompt_delivered",
+				promptId: `r${++n}`,
+				text: textOf(i),
+			});
+		} else if ("role" in i && i.role === "assistant") {
+			out.push({ type: "message_done", messageId: `rm${n}`, text: textOf(i) });
+		} else if (
+			"role" in i &&
+			i.role === "developer" &&
+			textOf(i) === "[interrupted by user]"
+		) {
+			out.push({
+				type: "turn_finished",
+				turnId: `r${n}`,
+				stopReason: "interrupted",
+				usage: zero,
+			});
+		}
+	}
+	return out;
+}

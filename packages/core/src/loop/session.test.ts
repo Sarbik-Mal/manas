@@ -1,8 +1,10 @@
 import { afterAll, beforeEach, expect, test } from "bun:test";
+import type { ResponseInputItem } from "openai/resources/responses/responses";
 import Type from "typebox";
-import { call, fakeOpenAI, say } from "../testing/fake-openai";
+import { CUT_OFF } from "../session/store";
+import { call, fakeOpenAI, message, say } from "../testing/fake-openai";
 import { buildRegistry, defineTool } from "../tools/registry";
-import { createSession, type SessionEvent } from "./session";
+import { createSession, replayEvents, type SessionEvent } from "./session";
 
 const fake = fakeOpenAI();
 afterAll(fake.stop);
@@ -186,4 +188,92 @@ test("model and effort: silent before a reply, a warning after, from the next tu
 	);
 	session.setEffort(undefined);
 	expect(session.effort).toBeUndefined();
+});
+
+test("a resumed session sends its old history; replay maps every item kind", async () => {
+	const items = [
+		{ role: "user", content: "go" },
+		{ type: "reasoning", id: "rs", summary: [], encrypted_content: "x" },
+		{
+			type: "function_call",
+			call_id: "c1",
+			name: "gate",
+			arguments: '{"a":1}',
+		},
+		{ type: "function_call_output", call_id: "c1", output: "error: nope" },
+		{ type: "function_call", call_id: "c2", name: "gate", arguments: "{}" },
+		{ type: "function_call_output", call_id: "c2", output: CUT_OFF },
+		message("done"),
+		{ role: "user", content: "write a lot" },
+		{ role: "assistant", content: "par" },
+		{ role: "developer", content: "[interrupted by user]" },
+	] as ResponseInputItem[];
+	expect(replayEvents(items)).toEqual([
+		{ type: "prompt_delivered", promptId: "r1", text: "go" },
+		{ type: "tool_started", callId: "c1", name: "gate", input: { a: 1 } },
+		{
+			type: "tool_finished",
+			callId: "c1",
+			status: "error",
+			output: "error: nope",
+		},
+		{ type: "tool_started", callId: "c2", name: "gate", input: {} },
+		{
+			type: "tool_finished",
+			callId: "c2",
+			status: "interrupted",
+			output: CUT_OFF,
+		},
+		{ type: "message_done", messageId: "rm1", text: "done" },
+		{ type: "prompt_delivered", promptId: "r2", text: "write a lot" },
+		{ type: "message_done", messageId: "rm2", text: "par" },
+		expect.objectContaining({
+			type: "turn_finished",
+			stopReason: "interrupted",
+		}),
+	]);
+
+	const events: SessionEvent[] = [];
+	const session = createSession({
+		registry: buildRegistry([gate]),
+		model: "gpt-4o-mini",
+		items,
+		emit: (e) => events.push(e),
+	});
+	replies.push(say("again"));
+	session.prompt("next");
+	for (let i = 0; i < 400 && !events.some((e) => e.type === "idle"); i++)
+		await Bun.sleep(5);
+	expect(bodies[0].model).toBe("gpt-4o-mini");
+	expect(bodies[0].input.slice(0, items.length)).toEqual(items);
+});
+
+test("with a store: items, usage and changes are saved", async () => {
+	const saved: string[] = [];
+	const store = {
+		file: "f",
+		exists: true,
+		item: (i: ResponseInputItem) =>
+			saved.push(`item ${"role" in i ? i.role : i.type}`),
+		set: (c: object) => saved.push(`set ${JSON.stringify(c)}`),
+		usage: (t: string) => saved.push(`usage ${t}`),
+	};
+	const events: SessionEvent[] = [];
+	const session = createSession({
+		registry: buildRegistry([gate]),
+		model: "gpt-5.6-luna",
+		store,
+		emit: (e) => events.push(e),
+	});
+	replies.push(say("hi"));
+	session.prompt("hello");
+	for (let i = 0; i < 400 && !events.some((e) => e.type === "idle"); i++)
+		await Bun.sleep(5);
+	session.setEffort("high");
+	expect(saved).toEqual([
+		"item user",
+		"item assistant",
+		"usage t1",
+		'set {"effort":"high"}',
+	]);
 });

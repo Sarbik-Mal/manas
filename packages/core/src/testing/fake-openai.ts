@@ -1,7 +1,13 @@
 // A scripted fake OpenAI Responses API for tests. Each request takes the next
 // reply from `replies`: output items to send, optional text deltas first.
 // `hold` sends the text and keeps the stream open; `status` fails the request.
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ResponseInputItem } from "openai/resources/responses/responses";
+
+// A fresh folder for saved sessions, so tests never touch ~/.manas.
+export const tempRoot = () => mkdtempSync(join(tmpdir(), "manas-test-"));
 
 export type Reply = {
 	items?: object[];

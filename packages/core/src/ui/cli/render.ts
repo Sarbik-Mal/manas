@@ -64,3 +64,32 @@ export function header(
 		st,
 	);
 }
+
+export type Listed = {
+	session_id: string;
+	title: string;
+	updated: string;
+	messages: number;
+};
+
+export function ago(iso: string, now: number) {
+	const min = Math.floor((now - Date.parse(iso)) / 60_000);
+	if (min < 1) return "just now";
+	if (min < 60) return `${min} min ago`;
+	if (min < 60 * 24) return `${Math.floor(min / 60)} h ago`;
+	return `${Math.floor(min / (60 * 24))} d ago`;
+}
+
+const plural = (n: number) => `${n} message${n === 1 ? "" : "s"}`;
+
+// `3. Fix the login bug · 2 h ago · 14 messages`
+export function pickerRow(n: number, s: Listed, now: number, st: Style) {
+	const d = ` ${sym(st).dot} `;
+	return `${n}. ${s.title}${dim(`${d}${ago(s.updated, now)}${d}${plural(s.messages)}`, st)}`;
+}
+
+// `manas sessions`: the id first, for `--resume <id>`.
+export function sessionLine(s: Listed, now: number, st: Style) {
+	const d = ` ${sym(st).dot} `;
+	return `${s.session_id}${d}${ago(s.updated, now)}${d}${plural(s.messages)}${d}${s.title}`;
+}

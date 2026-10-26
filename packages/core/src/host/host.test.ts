@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, expect, test } from "bun:test";
-import { fakeOpenAI, type Msg, say } from "../testing/fake-openai";
+import { fakeOpenAI, type Msg, say, tempRoot } from "../testing/fake-openai";
 import { createHost } from "./host";
 
 const fake = fakeOpenAI();
@@ -7,9 +7,9 @@ afterAll(fake.stop);
 beforeEach(fake.reset);
 
 // A front end on a fake transport: everything the host sends lands in `out`.
-function connect() {
+function connect(root = tempRoot()) {
 	const out: Msg[] = [];
-	const host = createHost((line) => out.push(JSON.parse(line)));
+	const host = createHost((line) => out.push(JSON.parse(line)), { root });
 	let n = 0;
 	const send = (type: string, data: object = {}) => {
 		const id = `r${++n}`;
@@ -195,4 +195,51 @@ test("set_model and set_effort answer with the new state; bad values are invalid
 	expect(events("notice").map((e) => e.text)).toEqual([
 		"Already using effort default.",
 	]);
+});
+
+test("sessions are saved, listed and resumed with a replay", async () => {
+	const root = tempRoot();
+	const a = connect(root);
+	fake.replies.push(say("hello"));
+	const { result } = await a.ready();
+	a.send("session/prompt", { text: "hi" });
+	await a.waitFor(() => a.states().at(-1) === "idle" && a.states().length > 2);
+	a.send("session/set_model", { model: "gpt-4o-mini" });
+
+	const b = connect(root);
+	b.send("initialize", {
+		client: { name: "t", version: "0" },
+		capabilities: [],
+	});
+	expect(b.send("sessions/list", { cwd: "E:\\x" }).result.sessions).toEqual([
+		{
+			session_id: result.session_id,
+			title: "hi",
+			updated: expect.any(String),
+			messages: 2,
+		},
+	]);
+	expect(
+		b.send("session/resume", { session_id: "nope", cwd: "E:\\x" }),
+	).toEqual(error("not_found"));
+	expect(
+		b.send("session/resume", { session_id: result.session_id, cwd: "E:\\x" }),
+	).toMatchObject({
+		ok: true,
+		result: { session_id: result.session_id },
+	});
+	await b.waitFor(() => b.states().length > 0);
+	expect(b.events().map((e) => [e.type, e.replay ?? false])).toEqual([
+		["session/started", false],
+		["prompt/delivered", true],
+		["message/done", true],
+		["state/changed", false],
+	]);
+	expect(b.events("session/started")[0]).toMatchObject({
+		model: "gpt-4o-mini",
+		session_id: result.session_id,
+	});
+	expect(
+		b.send("session/resume", { session_id: result.session_id, cwd: "E:\\x" }),
+	).toEqual(error("session_exists"));
 });

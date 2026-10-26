@@ -30,6 +30,8 @@ export async function runCli({
 	defaults = {},
 	firstPrompt,
 	style,
+	root,
+	resume,
 }: {
 	input: In;
 	output: NodeJS.WritableStream;
@@ -37,6 +39,10 @@ export async function runCli({
 	defaults?: { model?: string; effort?: string };
 	firstPrompt?: string;
 	style: r.Style;
+	// Where sessions are saved; tests use a temp folder.
+	root?: string;
+	// -c, --resume <id>, or --resume alone (the picker).
+	resume?: { id: string } | "latest" | "pick";
 }): Promise<number> {
 	const write = (s: string) => output.write(s);
 	let atLineStart = true;
@@ -82,18 +88,45 @@ export async function runCli({
 			waiting.set(id, resolve);
 			host.receive(JSON.stringify({ kind: "request", id, type, ...data }));
 		});
-	const connect = async () => {
-		host = createHost(onLine);
+	// A host with no session yet; sessions can be listed now.
+	const open = async () => {
+		host = createHost(onLine, { root });
 		await request("initialize", {
 			client: { name: "manas-cli", version },
 			capabilities: [],
 		});
-		const res = await request("session/new", { cwd, model, effort });
-		if (!res.ok) throw new Error(res.error?.message);
 	};
+	// A new session, or a saved one (its replay prints first). Returns the
+	// error message, if any.
+	const start = async (id?: string) => {
+		const ready = new Promise<void>((resolve) => {
+			onIdle = resolve;
+		});
+		const res = id
+			? await request("session/resume", { session_id: id, cwd })
+			: await request("session/new", { cwd, model, effort });
+		if (res.ok) await ready;
+		onIdle = undefined;
+		return res.ok ? undefined : (res.error?.message ?? "error");
+	};
+	const list = async () =>
+		((await request("sessions/list", { cwd })).result?.sessions ??
+			[]) as r.Listed[];
+	// Like Claude: an empty screen, but the old chat stays in the scrollback.
+	// Newlines push it up instead of erasing it.
+	const clearScreen = () =>
+		write(`${"\n".repeat((output as { rows?: number }).rows ?? 24)}\x1b[H`);
 
 	function onEvent(e: Msg) {
 		switch (e.type) {
+			case "session/started":
+				model = e.model as string;
+				effort = (e.effort as string | null) ?? null;
+				return;
+			case "prompt/delivered":
+				// Live prompts are already on screen as typed; replayed ones aren't.
+				if (e.replay) say(`> ${e.text}`);
+				return;
 			case "message/delta": {
 				const text = e.text as string;
 				write(text);
@@ -101,7 +134,8 @@ export async function runCli({
 				return;
 			}
 			case "message/done":
-				if (!atLineStart) say("");
+				if (e.replay) say(e.text as string);
+				else if (!atLineStart) say("");
 				return;
 			case "tool/started":
 				return say(r.toolStarted(e.name as string, e.input, style));
@@ -216,6 +250,34 @@ export async function runCli({
 		}
 	};
 
+	// A one-line answer, e.g. the picker's number. Ctrl+C gives "".
+	const ask = (question: string) =>
+		new Promise<string>((resolve) => {
+			const rl = createInterface({ input, output, terminal: true });
+			rl.on("SIGINT", () => {
+				rl.close();
+				resolve("");
+			});
+			rl.question(question, (answer) => {
+				rl.close();
+				resolve(answer.trim());
+			});
+		});
+	// The 20 newest sessions in this folder; undefined if none was picked.
+	const pick = async () => {
+		const sessions = (await list()).slice(0, 20);
+		if (sessions.length === 0) {
+			say("No sessions in this folder yet.");
+			return undefined;
+		}
+		const now = Date.now();
+		say(sessions.map((s, i) => r.pickerRow(i + 1, s, now, style)).join("\n"));
+		const n = Number(await ask("Pick a number (Enter to cancel): "));
+		return Number.isInteger(n) && n >= 1 && n <= sessions.length
+			? sessions[n - 1].session_id
+			: undefined;
+	};
+
 	const showChoice = (name: string, current: string, choices: string[]) =>
 		say(
 			`${name}: ${current} ${r.dim(`(choices: ${choices.join(", ")})`, style)}`,
@@ -229,7 +291,26 @@ export async function runCli({
 	};
 
 	// --- Main loop ---
-	await connect();
+	await open();
+	let resumeId: string | undefined;
+	if (resume === "latest") {
+		resumeId = (await list())[0]?.session_id;
+		if (!resumeId) {
+			say(r.red("No session to continue in this folder.", style));
+			host.close();
+			return 1;
+		}
+	} else if (resume === "pick") {
+		resumeId = await pick();
+	} else if (resume) {
+		resumeId = resume.id;
+	}
+	const failed = await start(resumeId);
+	if (failed) {
+		say(r.red(failed, style));
+		host.close();
+		return 1;
+	}
 	say(r.header({ version, model, effort, cwd }, style));
 	if (firstPrompt) {
 		say(`> ${firstPrompt}`);
@@ -253,13 +334,27 @@ export async function runCli({
 				break;
 			case "clear":
 				host.close();
-				await connect();
+				await open();
+				await start();
 				history = [];
-				// Like Claude: an empty screen, but the old chat stays in the
-				// scrollback. Newlines push it up instead of erasing it.
-				write(`${"\n".repeat((output as { rows?: number }).rows ?? 24)}\x1b[H`);
+				clearScreen();
 				say(r.dim("New conversation.", style));
 				break;
+			case "resume": {
+				const id = await pick();
+				if (!id) break;
+				host.close();
+				clearScreen();
+				await open();
+				const error = await start(id);
+				if (error) {
+					say(r.red(error, style));
+					await start();
+				}
+				history = [];
+				say(r.header({ version, model, effort, cwd }, style));
+				break;
+			}
 			case "doctor": {
 				const { lines } = await doctor();
 				say(lines.join("\n"));
@@ -288,4 +383,31 @@ export async function runCli({
 	}
 	host.close();
 	return 0;
+}
+
+// `manas sessions`: this folder's saved sessions, through the protocol too.
+export function sessionsText(cwd: string, style: r.Style, root?: string) {
+	let result: r.Listed[] = [];
+	const host = createHost(
+		(line) => {
+			const m = JSON.parse(line);
+			if (m.kind === "response" && m.id === "l") result = m.result.sessions;
+		},
+		{ root },
+	);
+	host.receive(
+		JSON.stringify({
+			kind: "request",
+			id: "i",
+			type: "initialize",
+			client: { name: "manas-cli", version },
+			capabilities: [],
+		}),
+	);
+	host.receive(
+		JSON.stringify({ kind: "request", id: "l", type: "sessions/list", cwd }),
+	);
+	if (result.length === 0) return "No sessions in this folder yet.";
+	const now = Date.now();
+	return result.map((s) => r.sessionLine(s, now, style)).join("\n");
 }

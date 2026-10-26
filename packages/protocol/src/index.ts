@@ -43,6 +43,8 @@ export const Line = {
 		session_id: Type.Union([Type.String(), Type.Null()]),
 		parent_id: Type.Union([Type.String(), Type.Null()]),
 		seq: Type.Integer(),
+		// Rebuilt from a saved session on resume, not happening now.
+		replay: Type.Optional(Type.Boolean()),
 	}),
 };
 
@@ -69,6 +71,14 @@ export const Requests = {
 		text: Type.String(),
 		priority: Nullable(Priority),
 	}),
+	// Loads a saved session and replays it as events with `replay: true`.
+	// Looks in `cwd`'s project first, then in every project.
+	"session/resume": Type.Object({
+		session_id: Type.String(),
+		cwd: Type.String(),
+	}),
+	// Saved sessions of `cwd`'s project, newest first.
+	"sessions/list": Type.Object({ cwd: Type.String() }),
 	// Queued prompts survive an interrupt unless `cancel_queued`.
 	"session/interrupt": Type.Object({ cancel_queued: Nullable(Type.Boolean()) }),
 	// Both apply from the next turn. Changing either after a reply loses the
@@ -95,6 +105,17 @@ export const Results = {
 	"session/new": Type.Object({ session_id: Type.String() }),
 	"session/prompt": Type.Object({ prompt_id: Type.String() }),
 	"session/interrupt": Type.Object({ still_queued: Type.Array(Type.String()) }),
+	"session/resume": Type.Object({ session_id: Type.String() }),
+	"sessions/list": Type.Object({
+		sessions: Type.Array(
+			Type.Object({
+				session_id: Type.String(),
+				title: Type.String(),
+				updated: Type.String(),
+				messages: Type.Integer(),
+			}),
+		),
+	}),
 	"session/set_model": ModelState,
 	"session/set_effort": ModelState,
 };

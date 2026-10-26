@@ -9,12 +9,23 @@ import {
 	type Result,
 } from "@manas/protocol";
 import Value from "typebox/value";
+import { version } from "../../package.json";
 import {
 	createSession,
 	type Session,
 	type SessionEvent,
 } from "../loop/session";
 import { checkEffort } from "../provider/models";
+import {
+	DEFAULT_ROOT,
+	findSession,
+	type Loaded,
+	listSessions,
+	loadSession,
+	openStore,
+	projectDir,
+	sessionFile,
+} from "../session/store";
 import { buildRegistry, describeErrors } from "../tools/registry";
 
 type Fail = { code: string; message: string };
@@ -31,8 +42,10 @@ class ProtocolError extends Error {
 // an in-process channel for the CLI in 1.4). One session per host.
 export function createHost(
 	send: (line: string) => void,
-	defaults: { model?: string; effort?: string } = {},
+	defaults: { model?: string; effort?: string; root?: string } = {},
 ) {
+	const root = defaults.root ?? DEFAULT_ROOT;
+	let replaying = false;
 	let initialized = false;
 	let session: Session | undefined;
 	let sessionId: string | null = null;
@@ -52,6 +65,7 @@ export function createHost(
 			session_id: sessionId,
 			parent_id: null,
 			seq: ++seq,
+			...(replaying && { replay: true }),
 			...data,
 		});
 	const notice = (level: "info" | "warn" | "error", text: string) =>
@@ -125,33 +139,34 @@ export function createHost(
 				return { protocol_version: PROTOCOL_VERSION, capabilities: [] };
 			},
 			"session/new"({ cwd, model, effort }) {
-				if (session)
-					throw new ProtocolError(
-						"session_exists",
-						"this process already has a session",
-					);
+				noSession();
 				const m = model ?? defaults.model ?? "gpt-5.6-luna";
 				const eff = effort ?? defaults.effort;
 				invalidParams(() => checkEffort(m, eff));
-				const registry = buildRegistry([]);
-				session = createSession({
-					registry,
-					model: m,
-					effort: eff,
-					emit: onSession,
-					onInterrupt: () => cancelPending("interrupted"),
-				});
-				sessionId = crypto.randomUUID();
-				queueMicrotask(() => {
-					event("session/started", {
-						model: m,
-						effort: eff ?? null,
-						tools: registry.specs.map((s) => s.name),
-						cwd,
-					});
-					updateState();
-				});
-				return { session_id: sessionId };
+				const id = crypto.randomUUID();
+				open(id, sessionFile(projectDir(cwd, root), id), cwd, m, eff);
+				return { session_id: id };
+			},
+			"session/resume"({ session_id, cwd }) {
+				noSession();
+				const file = findSession(session_id, cwd, root);
+				let loaded: Loaded | undefined;
+				try {
+					if (file) loaded = loadSession(file);
+				} catch {}
+				if (!file || !loaded) {
+					throw new ProtocolError(
+						"not_found",
+						`No session found with id ${session_id}`,
+					);
+				}
+				const { model: m, effort: eff } = loaded;
+				invalidParams(() => checkEffort(m, eff ?? undefined));
+				open(session_id, file, loaded.start.cwd, m, eff ?? undefined, loaded);
+				return { session_id };
+			},
+			"sessions/list"({ cwd }) {
+				return { sessions: listSessions(projectDir(cwd, root)) };
 			},
 			"session/prompt"({ text, priority }) {
 				return { prompt_id: need().prompt(text, priority ?? "next") };
@@ -170,6 +185,62 @@ export function createHost(
 				return { model: s.model, effort: s.effort ?? null };
 			},
 		};
+	const noSession = () => {
+		if (session) {
+			throw new ProtocolError(
+				"session_exists",
+				"this process already has a session",
+			);
+		}
+	};
+	// A new or resumed session, saved to `file` from its first message on.
+	function open(
+		id: string,
+		file: string,
+		cwd: string,
+		model: string,
+		effort: string | undefined,
+		loaded?: Loaded,
+	) {
+		const registry = buildRegistry([]);
+		const s = createSession({
+			registry,
+			model,
+			effort,
+			emit: onSession,
+			onInterrupt: () => cancelPending("interrupted"),
+			items: loaded?.items,
+			store: openStore(file, () => ({
+				model: s.model,
+				effort: s.effort ?? null,
+				cwd,
+				version,
+				created: new Date().toISOString(),
+			})),
+		});
+		session = s;
+		sessionId = id;
+		queueMicrotask(() => {
+			event("session/started", {
+				model,
+				effort: effort ?? null,
+				tools: registry.specs.map((t) => t.name),
+				cwd,
+			});
+			if (loaded) {
+				replaying = true;
+				for (const e of s.replay()) onSession(e);
+				replaying = false;
+				if (loaded.skipped > 0) {
+					notice(
+						"warn",
+						`Skipped ${loaded.skipped} damaged line(s) in the saved session.`,
+					);
+				}
+			}
+			updateState();
+		});
+	}
 	const invalidParams = (f: () => void) => {
 		try {
 			f();

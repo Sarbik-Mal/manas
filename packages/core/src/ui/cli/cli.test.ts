@@ -1,7 +1,9 @@
 import { afterAll, beforeEach, expect, test } from "bun:test";
 import { PassThrough } from "node:stream";
-import { fakeOpenAI, say } from "../../testing/fake-openai";
-import { runCli } from "./cli";
+import { fakeOpenAI, say, tempRoot } from "../../testing/fake-openai";
+import { runCli, sessionsText } from "./cli";
+
+const style = { unicode: true, color: false };
 
 const fake = fakeOpenAI();
 afterAll(fake.stop);
@@ -9,7 +11,15 @@ beforeEach(fake.reset);
 const { replies, bodies } = fake;
 
 // The CLI on fake streams: `type` sends raw key presses, as a terminal would.
-function startCli(firstPrompt?: string) {
+function startCli({
+	firstPrompt,
+	root = tempRoot(),
+	resume,
+}: {
+	firstPrompt?: string;
+	root?: string;
+	resume?: Parameters<typeof runCli>[0]["resume"];
+} = {}) {
 	const input = new PassThrough();
 	const output = new PassThrough();
 	let out = "";
@@ -22,6 +32,8 @@ function startCli(firstPrompt?: string) {
 		cwd: "E:\\x",
 		firstPrompt,
 		style: { unicode: true, color: false },
+		root,
+		resume,
 	});
 	const waitFor = async (pred: () => boolean) => {
 		for (let i = 0; i < 400 && !pred(); i++) await Bun.sleep(5);
@@ -57,7 +69,7 @@ test("a chat: two prompts share one history, then /exit", async () => {
 
 test("a first prompt from the command line runs right away", async () => {
 	replies.push(say("hello"));
-	const cli = startCli("start here");
+	const cli = startCli({ firstPrompt: "start here" });
 	await cli.shows("hello");
 	expect(cli.userTexts(0)).toEqual(["start here"]);
 	await cli.type("/exit\r");
@@ -143,4 +155,86 @@ test("Ctrl+C twice quits; Ctrl+D quits", async () => {
 	const b = startCli();
 	await b.type("\x04");
 	expect(await b.exited).toBe(0);
+});
+
+// One saved session per prompt in `root`, oldest first.
+async function saved(root: string, ...prompts: string[]) {
+	for (const p of prompts) {
+		const cli = startCli({ root });
+		replies.push(say(`ok: ${p}`));
+		await cli.type(`${p}\r`);
+		await cli.shows(`ok: ${p}`);
+		await cli.type("/exit\r");
+		await cli.exited;
+		await Bun.sleep(20); // distinct modified times
+	}
+}
+
+test("-c resumes the latest session: replay, then the old history goes out", async () => {
+	const root = tempRoot();
+	await saved(root, "remember 42");
+	const cli = startCli({ root, resume: "latest" });
+	await cli.shows("> remember 42\nok: remember 42");
+	replies.push(say("it was 42!"));
+	await cli.type("what number?\r");
+	await cli.shows("it was 42!");
+	expect(cli.userTexts(bodies.length - 1)).toEqual([
+		"remember 42",
+		"what number?",
+	]);
+	await cli.type("/exit\r");
+	await cli.exited;
+});
+
+test("-c with no sessions, or an unknown id, exits 1 with a message", async () => {
+	const a = startCli({ resume: "latest" });
+	expect(await a.exited).toBe(1);
+	expect(a.out()).toContain("No session to continue in this folder.");
+	const b = startCli({ resume: { id: "nope" } });
+	expect(await b.exited).toBe(1);
+	expect(b.out()).toContain("No session found with id nope");
+});
+
+test("the picker: newest first; a number resumes, Enter starts fresh", async () => {
+	const root = tempRoot();
+	await saved(root, "first", "second");
+	const a = startCli({ root, resume: "pick" });
+	await a.shows("1. second");
+	expect(a.out()).toContain("2. first");
+	await a.shows("Pick a number");
+	a.input.write("2\r");
+	await a.shows("> first\nok: first");
+	await a.type("/exit\r");
+	await a.exited;
+
+	const b = startCli({ root, resume: "pick" });
+	await b.shows("Pick a number");
+	b.input.write("\r");
+	await b.shows("manas ");
+	expect(b.out()).not.toContain("ok: ");
+	await b.type("/exit\r");
+	await b.exited;
+});
+
+test("/resume switches to a saved session", async () => {
+	const root = tempRoot();
+	await saved(root, "old chat");
+	const cli = startCli({ root });
+	await cli.type("/resume\r");
+	await cli.shows("Pick a number");
+	cli.input.write("1\r");
+	await cli.shows("> old chat\nok: old chat");
+	await cli.type("/exit\r");
+	await cli.exited;
+});
+
+test("manas sessions lists this folder's sessions with their ids", async () => {
+	const root = tempRoot();
+	expect(sessionsText("E:\\x", style, root)).toBe(
+		"No sessions in this folder yet.",
+	);
+	await saved(root, "hello there");
+	expect(sessionsText("E:\\x", style, root)).toMatch(
+		/^[\w-]+ · just now · 2 messages · hello there$/,
+	);
 });
