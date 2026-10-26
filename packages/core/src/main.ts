@@ -3,7 +3,8 @@ import { version } from "../package.json";
 import { liveSettings, loadSettings } from "./config/settings";
 import { doctor } from "./doctor";
 import { createHost, type SettingsSource } from "./host/host";
-import { enableDebugLog } from "./log/debug";
+import { enableDebugLog, setLogScrubber } from "./log/debug";
+import { scrubForLog } from "./safety/scrub";
 import { runCli, sessionsText } from "./ui/cli/cli";
 import { detectStyle } from "./ui/cli/render";
 
@@ -33,6 +34,7 @@ try {
 	});
 
 	if (values.debug) enableDebugLog();
+	setLogScrubber(scrubForLog);
 
 	// Settings files plus this run's flags, watched while Manas runs. A broken
 	// file that could change what's allowed stops here (settings.md).

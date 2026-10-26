@@ -1,6 +1,7 @@
 import type { ResponseInputItem } from "openai/resources/responses/responses";
 import { capability, checkEffort } from "../provider/models";
 import type { Usage } from "../provider/openai";
+import { scrubItem, type Vault } from "../safety/scrub";
 import { CUT_OFF, type Store, textOf } from "../session/store";
 import type { Permit, Registry } from "../tools/registry";
 import { type LoopEvent, runTurn } from "./turn";
@@ -44,12 +45,18 @@ export function createSession({
 	store,
 	items = [],
 	permit,
+	vault,
+	ready,
 }: {
 	registry: Registry;
 	model: string;
 	effort?: string;
 	// Where history is saved (1.5); none in tests that don't need it.
 	store?: Store;
+	// Secrets in every item are replaced before it's kept (1.8).
+	vault?: Vault;
+	// Turns wait for this, e.g. the .env preload, so no secret slips past.
+	ready?: Promise<unknown>;
 	// A resumed session's history, already on disk.
 	items?: ResponseInputItem[];
 	// Step 2 of every tool call: settings rules now, the engine in 1.7.
@@ -59,12 +66,15 @@ export function createSession({
 	onInterrupt?: () => void;
 }) {
 	const history: ResponseInputItem[] = [...items];
-	// Every item the loop adds is saved before it's kept, so a killed process
-	// loses at most the line being written. One spot covers every push.
-	if (store) {
+	// Every item the loop adds is scrubbed, then saved, then kept: secrets never
+	// reach the model or the session file, and a killed process loses at most
+	// the line being written. One spot covers every push. Scrubbed once, on
+	// the way in, so history never changes later (that would break the cache).
+	if (store || vault) {
 		history.push = (...added) => {
-			for (const i of added) store.item(i);
-			return Array.prototype.push.apply(history, added);
+			const clean = vault ? added.map((i) => scrubItem(i, vault)) : added;
+			for (const i of clean) store?.item(i);
+			return Array.prototype.push.apply(history, clean);
 		};
 	}
 	// Read when each turn starts, so a change applies from the next turn.
@@ -97,6 +107,9 @@ export function createSession({
 		for (let q = queue.shift(); q; q = queue.shift()) {
 			const ac = new AbortController();
 			running = ac;
+			// After `running` is this turn's: an interrupt during the wait
+			// aborts it, and the turn ends `interrupted` without a request.
+			await ready;
 			const turnId = `t${++turns}`;
 			let messageId: string | undefined;
 			for await (const e of runTurn(history, deliver(q), {

@@ -5,6 +5,7 @@ import { createHost, type SettingsSource } from "../../host/host";
 import { capability, modelNames } from "../../provider/models";
 import type { Tool } from "../../tools/registry";
 import { HELP, parseCommand } from "./commands";
+import { addToHistory, historyFile, loadHistory } from "./prompt-history";
 import * as r from "./render";
 
 type In = NodeJS.ReadableStream & {
@@ -168,7 +169,9 @@ export async function runCli({
 	}
 
 	// --- Reading input ---
-	let history: string[] = [];
+	// ↑/↓ history: this folder's saved prompts (encrypted), plus this run's.
+	const savedHistory = historyFile(cwd, root);
+	let history = loadHistory(savedHistory);
 	let lastCtrlC = 0;
 	const secondCtrlC = () => {
 		const now = Date.now();
@@ -182,8 +185,6 @@ export async function runCli({
 	// Enter; the Ink screen (M10) brings it.
 	const readPrompt = () =>
 		new Promise<string | null>((resolve) => {
-			// ponytail: history lives in memory for this run only; it's saved per
-			// folder once the vault (1.8) can scrub it (limitation.md).
 			const rl: Interface = createInterface({
 				input,
 				output,
@@ -207,6 +208,7 @@ export async function runCli({
 					rl.prompt();
 					return;
 				}
+				addToHistory(savedHistory, [...parts, line]);
 				finish([...parts, line].join("\n"));
 			});
 			rl.on("SIGINT", () => {

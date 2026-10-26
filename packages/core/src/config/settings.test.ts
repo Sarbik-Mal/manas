@@ -167,3 +167,13 @@ test("live: a change is picked up; a broken file keeps the last good settings", 
 	expect(live.current.rules.deny.map((r) => r.text)).toEqual(["Read"]);
 	live.stop();
 });
+
+test("live: nothing is reported when nothing changed (missing files included)", async () => {
+	const { cwd, home } = setup();
+	const live = liveSettings(() => loadSettings({ cwd, home }), 10);
+	const events: unknown[] = [];
+	live.subscribe((e) => events.push(e));
+	await Bun.sleep(200);
+	expect(events).toEqual([]);
+	live.stop();
+});

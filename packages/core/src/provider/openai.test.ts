@@ -1,6 +1,9 @@
 import { afterAll, beforeEach, expect, test } from "bun:test";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { ResponseOutputMessage } from "openai/resources/responses/responses";
-import { lastRateLimits, streamResponse } from "./openai";
+import { tempRoot } from "../testing/fake-openai";
+import { apiKey, lastRateLimits, streamResponse } from "./openai";
 
 // A fake OpenAI: each test sets how many 429s to send before a real stream,
 // and whether the stream then stays open (`hold`) instead of finishing.
@@ -8,6 +11,7 @@ let fails = 0;
 let hold = false;
 let requests = 0;
 let lastBody: Record<string, unknown> | undefined;
+let lastAuth: string | null = null;
 const item: ResponseOutputMessage = {
 	type: "message",
 	id: "msg_1",
@@ -20,6 +24,7 @@ const server = Bun.serve({
 	port: 0,
 	async fetch(req) {
 		requests++;
+		lastAuth = req.headers.get("authorization");
 		lastBody = await req.json();
 		if (requests <= fails) {
 			return Response.json(
@@ -121,6 +126,36 @@ test("tools are sent strict, and only when there are any", async () => {
 
 test("finished output items are returned, unknown kinds dropped", async () => {
 	expect((await collect()).output).toEqual([item]);
+});
+
+test("the key: the environment first, else ~/.manas/.env, else a clear error", async () => {
+	const home = tempRoot();
+	const savedHome = process.env.USERPROFILE;
+	process.env.USERPROFILE = home;
+	try {
+		mkdirSync(join(home, ".manas"));
+		writeFileSync(
+			join(home, ".manas", ".env"),
+			'# dev key\nOTHER=x\nexport OPENAI_API_KEY="sk-from-file" # note\n',
+		);
+		expect(apiKey(home)).toBe("test-key");
+		await collect();
+		expect(lastAuth).toBe("Bearer test-key");
+
+		delete process.env.OPENAI_API_KEY;
+		expect(apiKey(home)).toBe("sk-from-file");
+		await collect();
+		expect(lastAuth).toBe("Bearer sk-from-file");
+		expect(process.env.OPENAI_API_KEY).toBeUndefined();
+
+		rmSync(join(home, ".manas", ".env"));
+		await expect(collect()).rejects.toThrow(
+			`OPENAI_API_KEY is not set (put it in ${join(home, ".manas", ".env")})`,
+		);
+	} finally {
+		process.env.USERPROFILE = savedHome;
+		process.env.OPENAI_API_KEY = "test-key";
+	}
 });
 
 test("an abort mid-stream stops it without a retry", async () => {

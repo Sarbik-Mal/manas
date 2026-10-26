@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import OpenAI from "openai";
 import type {
 	FunctionTool,
@@ -5,6 +8,7 @@ import type {
 } from "openai/resources/responses/responses";
 import type { ReasoningEffort } from "openai/resources/shared";
 import { debugLog } from "../log/debug";
+import { envValues } from "../safety/env-preload";
 import { installId } from "../storage/install-id";
 import { checkEffort } from "./models";
 
@@ -39,6 +43,25 @@ export type Usage = {
 	reasoning: number;
 };
 
+export const keyFile = (home = homedir()) => join(home, ".manas", ".env");
+
+// The key: the environment first, else ~/.manas/.env. Read per request and
+// never put in process.env, so it can't reach a child process; the exe is
+// built without .env autoload, so a project's .env is never used.
+// ponytail: a plain-text file, developer mode only; `manas login --key`
+// (Credential Manager, cli.md) replaces it.
+export function apiKey(home = homedir()) {
+	if (process.env.OPENAI_API_KEY) return process.env.OPENAI_API_KEY;
+	let text: string;
+	try {
+		text = readFileSync(keyFile(home), "utf8");
+	} catch {
+		return undefined;
+	}
+	const m = /^\s*(?:export\s+)?OPENAI_API_KEY\s*=\s*(.*)$/m.exec(text);
+	return m ? envValues(m[0])[0] : undefined;
+}
+
 // Output item kinds we send back next round; the rest are tools we never offer.
 const KEPT = new Set(["message", "reasoning", "function_call"]);
 
@@ -60,8 +83,12 @@ export async function* streamResponse(
 	} = {},
 ): AsyncGenerator<string, { output: ResponseInputItem[]; usage?: Usage }> {
 	const efforts = checkEffort(model, effort);
-	if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not set");
+	const key = apiKey();
+	if (!key) {
+		throw new Error(`OPENAI_API_KEY is not set (put it in ${keyFile()})`);
+	}
 	const client = new OpenAI({
+		apiKey: key,
 		maxRetries: MAX_RETRIES,
 		timeout: TIMEOUT_MS,
 		logLevel: "info",

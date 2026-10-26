@@ -1,9 +1,11 @@
 import { afterAll, beforeEach, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { PassThrough } from "node:stream";
 import Type from "typebox";
 import { call, fakeOpenAI, say, tempRoot } from "../../testing/fake-openai";
 import { defineTool } from "../../tools/registry";
 import { runCli, sessionsText } from "./cli";
+import { historyFile } from "./prompt-history";
 
 const style = { unicode: true, color: false };
 
@@ -333,4 +335,23 @@ test("approval prompt: Esc is a plain No, which stops the turn", async () => {
 	expect(bodies).toHaveLength(1);
 	await cli.type("/exit\r");
 	await cli.exited;
+});
+
+test("prompt history survives a restart, encrypted on disk", async () => {
+	const root = tempRoot();
+	const a = startCli({ root });
+	replies.push(say("first"), say("again"));
+	await a.type("remember token-xyz-123\r");
+	await a.shows("first");
+	await a.type("/exit\r");
+	await a.exited;
+	const file = historyFile("E:\\x", root);
+	expect(readFileSync(file).toString("latin1")).not.toContain("token-xyz-123");
+
+	const b = startCli({ root });
+	await b.type("\x1b[A\x1b[A\r"); // ↑ ↑: past /exit to the prompt
+	await b.shows("again");
+	expect(b.userTexts(bodies.length - 1)).toEqual(["remember token-xyz-123"]);
+	await b.type("/exit\r");
+	await b.exited;
 });

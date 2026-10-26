@@ -49,7 +49,12 @@ export const sessionFile = (dir: string, id: string) =>
 
 // The file appears with the first item, so opening Manas and quitting leaves
 // nothing behind. `start` is read then, so earlier model changes are in it.
-export function openStore(file: string, start: () => Start) {
+// `onCreate`: the file was just made (the vault is saved from then on).
+export function openStore(
+	file: string,
+	start: () => Start,
+	onCreate: () => void = () => {},
+) {
 	let exists = false;
 	try {
 		statSync(file);
@@ -67,6 +72,7 @@ export function openStore(file: string, start: () => Start) {
 				mkdirSync(dirname(file), { recursive: true });
 				write({ kind: "start", ...start() });
 				exists = true;
+				onCreate();
 			}
 			write({ kind: "item", item });
 		},

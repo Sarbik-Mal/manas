@@ -1,4 +1,10 @@
-import { appendFileSync, readFileSync, unwatchFile, watchFile } from "node:fs";
+import {
+	appendFileSync,
+	readFileSync,
+	type Stats,
+	unwatchFile,
+	watchFile,
+} from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import Type, { type Static, type TSchema } from "typebox";
@@ -327,9 +333,14 @@ export function watchSettings(
 	onChange: () => void,
 	intervalMs = 1000,
 ) {
-	for (const f of files) watchFile(f, { interval: intervalMs }, onChange);
+	// Bun fires once for a file that doesn't exist, with nothing changed;
+	// only a real change (or the file appearing or going) counts.
+	const listener = (curr: Stats, prev: Stats) => {
+		if (curr.mtimeMs !== prev.mtimeMs || curr.size !== prev.size) onChange();
+	};
+	for (const f of files) watchFile(f, { interval: intervalMs }, listener);
 	return () => {
-		for (const f of files) unwatchFile(f, onChange);
+		for (const f of files) unwatchFile(f, listener);
 	};
 }
 

@@ -30,11 +30,13 @@ bun test
 bun run build        # produces manas.exe
 ```
 
-For development, put your key in `.env` (never committed):
+For development, put your key in `%USERPROFILE%\.manas\.env` (`manas doctor` checks it); a key set in the environment wins:
 
 ```
 OPENAI_API_KEY=sk-...
 ```
+
+`manas.exe` never reads the `.env` of the folder it runs in. The repo's own `.env` is only used by `bun run` and `bun test`.
 
 ## Project layout
 

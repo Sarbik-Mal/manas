@@ -19,13 +19,20 @@ export function debugLog(entry: Record<string, unknown>) {
 	if (!file) return;
 	const line = JSON.stringify({ ts: new Date().toISOString(), ...entry });
 	try {
-		appendFileSync(file, `${redact(line)}\n`);
+		appendFileSync(file, `${scrubber(redact(line))}\n`);
 	} catch {
 		// A broken debug log must never break a request.
 	}
 }
 
-// ponytail: env key + sk- pattern only; the vault (1.8) replaces this.
+// The vault's scrubber (patterns plus every known secret), set by main.
+// Injected, since the log layer sits below the vault.
+let scrubber = (text: string) => text;
+export function setLogScrubber(fn: (text: string) => string) {
+	scrubber = fn;
+}
+
+// Always applied, even before the vault is hooked in: the API key itself.
 export function redact(text: string) {
 	const key = process.env.OPENAI_API_KEY;
 	if (key) text = text.replaceAll(key, "[REDACTED]");

@@ -1,6 +1,9 @@
 import { afterAll, beforeEach, expect, test } from "bun:test";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import Type from "typebox";
 import type { Loaded } from "../config/settings";
+import { projectDir } from "../session/store";
 import {
 	call,
 	fakeOpenAI,
@@ -38,12 +41,12 @@ function connect(
 	const events = (type?: string) =>
 		out.filter((m) => m.kind === "event" && (!type || m.type === type));
 	const states = () => events("state/changed").map((e) => e.state);
-	const ready = async () => {
+	const ready = async (cwd = "E:\\x") => {
 		send("initialize", {
 			client: { name: "test", version: "0" },
 			capabilities: [],
 		});
-		const r = send("session/new", { cwd: "E:\\x" });
+		const r = send("session/new", { cwd });
 		await waitFor(() => events("session/started").length > 0);
 		return r;
 	};
@@ -149,7 +152,8 @@ test("an interrupt cancels pending core requests and returns the queue", async (
 	fake.replies.push({ text: "long…", hold: true });
 	await ready();
 	send("session/prompt", { text: "write a lot" });
-	await waitFor(() => states().at(-1) === "running");
+	// The held reply must be taken by this turn, not the queued one.
+	await waitFor(() => fake.bodies.length === 1);
 	const answer = host.request("test/ask", {});
 	expect(states().at(-1)).toBe("waiting_for_user");
 	const queued = send("session/prompt", { text: "then", priority: "later" })
@@ -529,5 +533,111 @@ test("interrupt while asking cancels the request; a bad answer counts as no", as
 	expect(b.events("tool/finished")[0].status).toBe("denied");
 	expect(b.events("notice").at(-1)?.text).toContain(
 		"invalid permission answer",
+	);
+});
+
+// --- 1.8: the vault ---
+
+const KEY = `sk-proj-${"Q1w2E3r4T5y6U7i8O9p0".repeat(2)}`;
+// A read tool returning a file that holds a key.
+const reader = defineTool({
+	name: "read",
+	description: "read",
+	schema: Type.Object({ path: Type.String() }, { additionalProperties: false }),
+	deferred: false,
+	readOnly: true,
+	permission: { path: (i) => i.path },
+	run: async ({ path }) =>
+		path.endsWith(".env")
+			? "1\tDB_URL=postgres://localhost/app\n"
+			: `1\tconst client = new OpenAI({ apiKey: "${KEY}" });\n2\techo ${ENV_VALUE}`,
+});
+const ENV_VALUE = "hunter2-db-pass";
+const sent = () => JSON.stringify(fake.bodies);
+
+test("the 1.8 check: a key read from a file reaches OpenAI only as a placeholder", async () => {
+	const root = tempRoot();
+	const project = tempRoot();
+	writeFileSync(join(project, ".env"), `DB_PASSWORD=${ENV_VALUE}\n`);
+	const c = connect(root, { tools: [reader] });
+	fake.replies.push(
+		{ items: [call("read", { path: "src/app.ts" })] },
+		say("The key is [REDACTED:api_key#1]"),
+	);
+	await c.ready(project);
+	c.send("session/prompt", { text: `also this one: ${KEY}` });
+	await c.waitFor(() => c.events("turn/finished").length === 1);
+
+	// What OpenAI saw: placeholders only (the pasted key, the read key, the .env value).
+	expect(sent()).not.toContain(KEY);
+	expect(sent()).not.toContain(ENV_VALUE);
+	expect(sent()).toContain("[REDACTED:api_key#1]");
+	expect(sent()).toContain("[REDACTED:env#1]");
+	// The session file too.
+	const sessionFile = (dir: string): string => {
+		for (const e of readdirSync(dir, { withFileTypes: true })) {
+			const p = join(dir, e.name);
+			if (e.isDirectory()) {
+				const f = sessionFile(p);
+				if (f) return f;
+			} else if (p.endsWith(".jsonl")) return p;
+		}
+		return "";
+	};
+	const saved = readFileSync(sessionFile(root), "utf8");
+	expect(saved).not.toContain(KEY);
+	expect(saved).not.toContain(ENV_VALUE);
+	// The user's own screen shows the real values.
+	expect(c.events("tool/finished")[0].output).toContain(KEY);
+	expect(c.events("message/done")[0].text).toBe(`The key is ${KEY}`);
+	expect(
+		c
+			.events("message/delta")
+			.map((e) => e.text)
+			.join(""),
+	).toBe(`The key is ${KEY}`);
+});
+
+test("resume brings the vault back; an unreadable vault starts fresh with a notice", async () => {
+	const root = tempRoot();
+	const a = connect(root, { tools: [reader] });
+	fake.replies.push(say("noted"));
+	const { result } = await a.ready();
+	a.send("session/prompt", { text: `my key ${KEY}` });
+	await a.waitFor(() => a.events("turn/finished").length === 1);
+
+	const b = connect(root);
+	b.send("initialize", {
+		client: { name: "t", version: "0" },
+		capabilities: [],
+	});
+	b.send("session/resume", { session_id: result.session_id, cwd: "E:\\x" });
+	await b.waitFor(() => b.states().length > 0);
+	expect(b.events("prompt/delivered")[0]).toMatchObject({
+		replay: true,
+		text: `my key ${KEY}`,
+	});
+
+	const vaultFile = join(
+		projectDir("E:\\x", root),
+		result.session_id,
+		"vault.bin",
+	);
+	writeFileSync(vaultFile, "garbage");
+	const c = connect(root);
+	c.send("initialize", {
+		client: { name: "t", version: "0" },
+		capabilities: [],
+	});
+	c.send("session/resume", { session_id: result.session_id, cwd: "E:\\x" });
+	await c.waitFor(() => c.states().length > 0);
+	expect(
+		c
+			.events("notice")
+			.map((e) => e.text)
+			.join(),
+	).toContain("Previous secret placeholders expired");
+	expect(c.events("prompt/delivered")[0].text).toBe(
+		"my key [REDACTED:api_key#1]",
 	);
 });

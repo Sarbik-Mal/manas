@@ -2,7 +2,12 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { debugLog, disableDebugLog, enableDebugLog } from "./debug";
+import {
+	debugLog,
+	disableDebugLog,
+	enableDebugLog,
+	setLogScrubber,
+} from "./debug";
 
 test("log lines never contain the key or sk- strings", () => {
 	const dir = mkdtempSync(join(tmpdir(), "manas-log-"));
@@ -27,4 +32,18 @@ test("log lines never contain the key or sk- strings", () => {
 		process.env.OPENAI_API_KEY = saved;
 		rmSync(dir, { recursive: true, force: true });
 	}
+});
+
+test("with the vault's scrubber hooked in, every known secret is redacted", () => {
+	const dir = mkdtempSync(join(tmpdir(), "manas-log-"));
+	enableDebugLog(dir);
+	setLogScrubber((t) => t.replaceAll("hunter2-db-pass", "[REDACTED:env#1]"));
+	debugLog({ kind: "error", error: "login failed with hunter2-db-pass" });
+	setLogScrubber((t) => t);
+	disableDebugLog();
+	const [file] = readdirSync(dir);
+	const text = readFileSync(join(dir, file), "utf8");
+	expect(text).not.toContain("hunter2-db-pass");
+	expect(text).toContain("[REDACTED:env#1]");
+	rmSync(dir, { recursive: true });
 });

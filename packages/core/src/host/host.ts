@@ -1,3 +1,4 @@
+import { basename, dirname, join } from "node:path";
 import {
 	CoreResults,
 	type EventData,
@@ -19,6 +20,9 @@ import {
 } from "../loop/session";
 import { decide, deniedBy } from "../permissions/engine";
 import { checkEffort } from "../provider/models";
+import { preloadEnv } from "../safety/env-preload";
+import { restoreDeep, restoreStream, Vault } from "../safety/scrub";
+import { openVault, saveVault } from "../safety/vault-file";
 import {
 	DEFAULT_ROOT,
 	findSession,
@@ -131,6 +135,12 @@ export function createHost(
 		updateState();
 	};
 
+	// The session's vault (1.8), and display streams that hold back a
+	// placeholder split across text chunks.
+	let vault: Vault | undefined;
+	const streams = new Map<string, ReturnType<typeof restoreStream>>();
+	const show = (text: string) => (vault ? vault.restore(text).text : text);
+
 	const onSession = (e: SessionEvent) => {
 		switch (e.type) {
 			case "running":
@@ -138,30 +148,46 @@ export function createHost(
 				return updateState();
 			case "notice":
 				return notice(e.level, e.text);
+			// The user's own screen shows real values (protocol.md rule 7);
+			// history and requests keep the placeholders.
 			case "prompt_delivered":
 				return event("prompt/delivered", {
 					prompt_id: e.promptId,
-					text: e.text,
+					text: show(e.text),
 				});
-			case "text":
-				return event("message/delta", {
+			case "text": {
+				let stream = streams.get(e.messageId);
+				if (!stream) {
+					stream = restoreStream(vault ?? new Vault());
+					streams.set(e.messageId, stream);
+				}
+				const text = stream.push(e.delta);
+				if (!text) return;
+				return event("message/delta", { message_id: e.messageId, text });
+			}
+			case "message_done": {
+				const rest = streams.get(e.messageId)?.flush();
+				streams.delete(e.messageId);
+				if (rest) {
+					event("message/delta", { message_id: e.messageId, text: rest });
+				}
+				return event("message/done", {
 					message_id: e.messageId,
-					text: e.delta,
+					text: show(e.text),
 				});
-			case "message_done":
-				return event("message/done", { message_id: e.messageId, text: e.text });
+			}
 			case "tool_started":
 				return event("tool/started", {
 					tool_call_id: e.callId,
 					name: e.name,
-					input: e.input,
+					input: vault ? restoreDeep(e.input, vault) : e.input,
 					title: e.name,
 				});
 			case "tool_finished":
 				return event("tool/finished", {
 					tool_call_id: e.callId,
 					status: e.status,
-					output: e.output,
+					output: show(e.output),
 				});
 			case "turn_finished":
 				if (e.error) notice("error", e.error);
@@ -278,8 +304,41 @@ export function createHost(
 		const registry = buildRegistry(
 			tools.filter((t) => !deniedBy(t.name, settings.current.rules)),
 		);
+		// The vault sits beside the session: sessions/<id>/vault.bin. Like the
+		// session file, it's only written once the session has a message.
+		const vaultFile = join(
+			dirname(file),
+			basename(file, ".jsonl"),
+			"vault.bin",
+		);
+		const opened = openVault(vaultFile);
+		const v = opened.vault;
+		vault = v;
+		const store = openStore(
+			file,
+			() => ({
+				model: s.model,
+				effort: s.effort ?? null,
+				cwd,
+				version,
+				created: new Date().toISOString(),
+			}),
+			() => saveVault(v, vaultFile),
+		);
+		v.onNew = () => {
+			if (store.exists) saveVault(v, vaultFile);
+		};
+		// .env values join the vault before the first turn runs.
+		const ready = preloadEnv(cwd, v).catch((err: Error) =>
+			notice(
+				"warn",
+				`Couldn't load .env values into the vault: ${err.message}`,
+			),
+		);
 		const s = createSession({
 			registry,
+			vault: v,
+			ready,
 			permit: async ({ tool, input, callId }) => {
 				const d = await decide(tool, input, {
 					rules: settings.current.rules,
@@ -325,13 +384,7 @@ export function createHost(
 			emit: onSession,
 			onInterrupt: () => cancelPending("interrupted"),
 			items: loaded?.items,
-			store: openStore(file, () => ({
-				model: s.model,
-				effort: s.effort ?? null,
-				cwd,
-				version,
-				created: new Date().toISOString(),
-			})),
+			store,
 		});
 		session = s;
 		sessionId = id;
@@ -344,6 +397,12 @@ export function createHost(
 			});
 			for (const w of [...settings.current.warnings, ...warnings]) {
 				notice("warn", w);
+			}
+			if (opened.expired) {
+				notice(
+					"warn",
+					"Previous secret placeholders expired (the saved vault couldn't be read). Read the files again to get new placeholders.",
+				);
 			}
 			if (loaded) {
 				replaying = true;
