@@ -448,3 +448,110 @@ test("--mode sets the starting mode; a bad one stops the CLI", async () => {
 	expect(await b.exited).toBe(1);
 	expect(b.out()).toContain("ghost (dontAsk) comes in 8.7");
 });
+
+// --- 2.8: ask_user ---
+
+test("the 2.8 check: questions show as a menu and wait; numbers, several, typed text", async () => {
+	const cli = startCli({ tools: coreTools() });
+	const option = (
+		label: string,
+		description = "",
+		preview: string | null = null,
+	) => ({
+		label,
+		description,
+		preview,
+	});
+	replies.push(
+		{
+			items: [
+				call("ask_user", {
+					questions: [
+						{
+							question: "Which layout?",
+							header: "Layout",
+							options: [
+								option(
+									"Sidebar (Recommended)",
+									"nav on the left",
+									"[nav] | main",
+								),
+								option("Top bar", "nav on top"),
+							],
+							multiSelect: false,
+						},
+						{
+							question: "Which pages?",
+							header: "Pages",
+							options: [option("Home"), option("About"), option("Blog")],
+							multiSelect: true,
+						},
+						{
+							question: "Name?",
+							header: "Name",
+							options: [option("Acme"), option("Zen")],
+							multiSelect: false,
+						},
+					],
+				}),
+			],
+		},
+		say("built it"),
+	);
+	await cli.type("make a site\r");
+	await cli.shows("⏺ ask_user(Which layout?)");
+	await cli.shows(
+		"Manas asks (Layout): Which layout?\n  1. Sidebar (Recommended): nav on the left\n       [nav] | main\n  2. Top bar: nav on top\n  3. Type something else",
+	);
+	await cli.shows("Choose 1-3: ");
+	await Bun.sleep(50);
+	expect(cli.out()).not.toContain("built it"); // it waits
+	cli.input.write("2\r");
+	await cli.shows("Choose 1-4 (several: 1,3): ");
+	cli.input.write("9\r"); // out of range: asked again
+	await cli.waitFor(
+		() => cli.out().split("Choose 1-4 (several: 1,3): ").length === 3,
+	);
+	cli.input.write("1, 3\r");
+	await cli.shows("Manas asks (Name): Name?");
+	await cli.shows("Choose 1-3: ");
+	await Bun.sleep(20);
+	cli.input.write("3\r");
+	await cli.shows("Your answer: ");
+	cli.input.write("Bolt\r");
+	await cli.shows("built it");
+	expect(outputs()[0]).toBe(
+		'The user answered: "Which layout?"="Top bar", "Which pages?"="Home, Blog", "Name?"="Bolt". Read the answers carefully — they may request clarification, changes, or that you not proceed — and follow what they actually say.',
+	);
+	await cli.type("/exit\r");
+	await cli.exited;
+});
+
+test("Esc on a question declines it, which stops the turn", async () => {
+	const cli = startCli({ tools: coreTools() });
+	replies.push({
+		items: [
+			call("ask_user", {
+				questions: [
+					{
+						question: "Which color?",
+						header: "Color",
+						options: [
+							{ label: "Blue", description: "", preview: null },
+							{ label: "Red", description: "", preview: null },
+						],
+						multiSelect: false,
+					},
+				],
+			}),
+		],
+	});
+	await cli.type("pick\r");
+	await cli.shows("Choose 1-3: ");
+	cli.input.write("\x1b");
+	await cli.shows("⎿ Interrupted");
+	expect(cli.out()).toContain("the user declined to answer");
+	expect(bodies).toHaveLength(1);
+	await cli.type("/exit\r");
+	await cli.exited;
+});

@@ -84,9 +84,11 @@ export async function runCli({
 			waiting.get(m.id as string)?.(m as unknown as Response);
 			waiting.delete(m.id as string);
 		} else if (m.kind === "request") {
+			// One prompt at a time, in the order they came.
 			if (m.type === "permission/request") {
-				// One prompt at a time, in the order they came.
 				prompts = prompts.then(() => askPermission(m));
+			} else if (m.type === "user/ask") {
+				prompts = prompts.then(() => askQuestions(m));
 			} else {
 				reply(m.id as string, {
 					ok: false,
@@ -113,7 +115,7 @@ export async function runCli({
 		host = createHost(onLine, { root, settings, tools });
 		await request("initialize", {
 			client: { name: "manas-cli", version },
-			capabilities: [],
+			capabilities: ["user_ask"],
 		});
 	};
 	// A new session, or a saved one (its replay prints first). Returns the
@@ -402,6 +404,57 @@ export async function runCli({
 				},
 			});
 	}
+	// --- Questions (user/ask, from ask_user) ---
+	// A numbered menu per question, plus "Type something else". Esc on any of
+	// them declines them all, which stops the turn.
+	// ponytail: numbers, not an arrow-key menu, until the Ink screen (M10).
+	async function askQuestions(m: Msg) {
+		const id = m.id as string;
+		if (cancelled.has(id)) return;
+		asking = id;
+		const answers: Record<string, string[]> = {};
+		let declined = false;
+		for (const q of m.questions as r.Question[]) {
+			say(r.question(q, style));
+			const other = q.options.length + 1;
+			let picked: string[] | undefined;
+			while (!picked) {
+				const a = await ask(
+					q.multiSelect
+						? `Choose 1-${other} (several: 1,3): `
+						: `Choose 1-${other}: `,
+				);
+				if (a === null) break;
+				const nums = [...new Set(a.split(/[\s,]+/).filter(Boolean))].map(
+					Number,
+				);
+				const bad =
+					nums.length === 0 ||
+					(!q.multiSelect && nums.length > 1) ||
+					nums.some((n) => !Number.isInteger(n) || n < 1 || n > other);
+				if (bad) continue;
+				const chosen = nums
+					.filter((n) => n !== other)
+					.map((n) => q.options[n - 1].label);
+				if (nums.includes(other)) {
+					const text = await ask("Your answer: ");
+					if (text === null) break;
+					if (!text) continue;
+					chosen.push(text);
+				}
+				picked = chosen;
+			}
+			if (!picked) {
+				declined = true;
+				break;
+			}
+			answers[q.question] = picked;
+		}
+		asking = undefined;
+		if (!cancelled.has(id))
+			reply(id, { ok: true, result: { answers: declined ? null : answers } });
+	}
+
 	// The 20 newest sessions in this folder; undefined if none was picked.
 	const pick = async () => {
 		const sessions = (await list()).slice(0, 20);

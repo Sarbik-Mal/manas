@@ -195,6 +195,8 @@ async function runOnce(c: Case): Promise<Run> {
 			}
 		})();
 
+		// ponytail: no "user_ask" yet, so cases run without ask_user; declare it
+		// and answer from the case's `answers` with the M2 evals.
 		request("initialize", {
 			client: { name: "evals", version: "0" },
 			capabilities: [],

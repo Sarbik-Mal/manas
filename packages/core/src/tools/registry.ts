@@ -2,6 +2,7 @@ import type { Static, TSchema } from "typebox";
 import Value from "typebox/value";
 import type { ToolSpec } from "../provider/openai";
 import type { Vault } from "../safety/scrub";
+import type { Answers, Questions } from "./ask";
 import type { Backups } from "./backups";
 import type { ReadRecord } from "./reads";
 
@@ -20,6 +21,11 @@ export type ToolCtx = {
 	vault: Vault;
 	// Copies of files before edit or write changes them (2.5).
 	backups: Backups;
+	// Asks the user (2.8); null if they declined. Missing when no front end
+	// can answer.
+	ask?: (questions: Questions, callId: string) => Promise<Answers | null>;
+	// This call's id, so a question can be tied to its tool row.
+	callId?: string;
 };
 // What a session hands every call; `signal` is per turn.
 export type SessionCtx = Omit<ToolCtx, "signal">;
@@ -59,6 +65,10 @@ export type Permit = (call: {
 	callId: string;
 	diff?: string;
 }) => Promise<{ output: string; stop?: boolean } | undefined>;
+
+// Thrown by `run` when the user said no (declined a question): the call is
+// denied and the turn stops, as a plain No does.
+export class Stopped extends Error {}
 
 // Only types `run`'s input from the schema.
 export const defineTool = <S extends TSchema>(tool: Tool<S>) => tool;
@@ -135,8 +145,10 @@ export async function callTool(
 	// 4. Run.
 	let output: string;
 	try {
-		output = await tool.run(input, ctx);
+		output = await tool.run(input, { ...ctx, callId });
 	} catch (err) {
+		if (err instanceof Stopped)
+			return { status: "denied", output: `error: ${err.message}`, stop: true };
 		return error((err as Error).message);
 	}
 	// 6. Return.

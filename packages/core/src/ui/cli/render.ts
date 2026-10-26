@@ -26,12 +26,17 @@ const sym = (st: Style) =>
 export const cut = (s: string, n: number, st: Style) =>
 	s.length > n ? `${s.slice(0, n)}${sym(st).more}` : s;
 
-// `⏺ read(src/app.ts)`: the first string field of the input, else short JSON.
+// `⏺ read(src/app.ts)`: the first string field of the input, else short JSON;
+// ask_user shows its first question.
 export function toolStarted(name: string, input: unknown, st: Style) {
+	const asked = (input as { questions?: { question?: unknown }[] } | null)
+		?.questions?.[0]?.question;
 	const first =
-		input && typeof input === "object"
-			? Object.values(input).find((v) => typeof v === "string")
-			: undefined;
+		name === "ask_user" && typeof asked === "string"
+			? asked
+			: input && typeof input === "object"
+				? Object.values(input).find((v) => typeof v === "string")
+				: undefined;
 	const summary = first ?? (input === undefined ? "" : JSON.stringify(input));
 	return dim(`${sym(st).tool} ${name}(${cut(summary, 60, st)})`, st);
 }
@@ -168,6 +173,32 @@ const plural = (n: number) => `${n} message${n === 1 ? "" : "s"}`;
 export function pickerRow(n: number, s: Listed, now: number, st: Style) {
 	const d = ` ${sym(st).dot} `;
 	return `${n}. ${s.title}${dim(`${d}${ago(s.updated, now)}${d}${plural(s.messages)}`, st)}`;
+}
+
+// --- Questions (ask_user) ---
+
+export type Question = {
+	question: string;
+	header: string;
+	options: { label: string; description: string; preview?: string | null }[];
+	multiSelect: boolean;
+};
+
+// `Manas asks (Library): Which one?`, the numbered options with their
+// previews under them, then "Type something else".
+export function question(q: Question, st: Style) {
+	const rows = [
+		yellow(`Manas asks${q.header ? ` (${q.header})` : ""}: ${q.question}`, st),
+	];
+	q.options.forEach((o, i) => {
+		rows.push(
+			`  ${i + 1}. ${o.label}${o.description ? dim(`: ${o.description}`, st) : ""}`,
+		);
+		for (const line of o.preview?.replace(/\r/g, "").split("\n") ?? [])
+			rows.push(dim(`       ${line}`, st));
+	});
+	rows.push(`  ${q.options.length + 1}. Type something else`);
+	return rows.join("\n");
 }
 
 // --- /rewind ---

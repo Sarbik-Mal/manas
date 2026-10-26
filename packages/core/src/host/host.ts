@@ -47,6 +47,7 @@ import {
 	projectDir,
 	sessionFile,
 } from "../session/store";
+import type { Answers, Questions } from "../tools/ask";
 import { openBackups } from "../tools/backups";
 import { readRecord } from "../tools/reads";
 import { buildRegistry, describeErrors, type Tool } from "../tools/registry";
@@ -91,6 +92,8 @@ export function createHost(
 ) {
 	let replaying = false;
 	let initialized = false;
+	// What the front end said it can do (initialize), e.g. "user_ask".
+	let capabilities: string[] = [];
 	let session: Session | undefined;
 	let sessionId: string | null = null;
 	let seq = 0;
@@ -225,8 +228,9 @@ export function createHost(
 			data: RequestData<T>,
 		) => Result<T> | Promise<Result<T>>;
 	} = {
-		initialize() {
+		initialize({ capabilities: theirs }) {
 			initialized = true;
+			capabilities = theirs;
 			return { protocol_version: PROTOCOL_VERSION, capabilities: [] };
 		},
 		"session/new"({ cwd, model, effort, mode: asked }) {
@@ -399,8 +403,15 @@ export function createHost(
 		};
 		// A bare deny removes the tool for the whole session. One added later
 		// keeps the list (and the prompt cache) and is refused by `permit`.
+		// ask_user only for a front end that can answer, so nothing waits on
+		// a script that can't.
+		const canAsk = capabilities.includes("user_ask");
 		const registry = buildRegistry(
-			tools.filter((t) => !deniedBy(t.name, settings.current.rules)),
+			tools.filter(
+				(t) =>
+					!deniedBy(t.name, settings.current.rules) &&
+					(t.name !== "ask_user" || canAsk),
+			),
 		);
 		// The vault sits beside the session: sessions/<id>/vault.bin. Like the
 		// session file, it's only written once the session has a message.
@@ -455,6 +466,7 @@ export function createHost(
 				reads: readRecord(loaded?.reads, (r) => store.read(r)),
 				vault: v,
 				backups,
+				ask: canAsk ? (questions, callId) => ask(questions, callId) : undefined,
 			},
 			permit: async ({ tool, input, callId, diff }) => {
 				const d = await decide(tool, input, {
@@ -510,6 +522,36 @@ export function createHost(
 		});
 		session = s;
 		sessionId = id;
+		// The front end shows real values; the answers come back keyed and
+		// labelled as the model wrote them (with placeholders).
+		const ask = async (questions: Questions, callId: string) => {
+			let answer: unknown;
+			try {
+				answer = await request("user/ask", {
+					tool_call_id: callId,
+					questions: restoreDeep(questions, v),
+				});
+			} catch {
+				throw new Error("interrupted by user"); // cancelled
+			}
+			if (!Value.Check(CoreResults["user/ask"], answer)) {
+				notice(
+					"error",
+					"The front end sent an invalid answer to the questions; treated as declined.",
+				);
+				return null;
+			}
+			const given = answer.answers;
+			if (!given) return null;
+			const out: Answers = {};
+			for (const q of questions) {
+				const a = given[show(q.question)];
+				if (!a) continue;
+				const labels = new Map(q.options.map((o) => [show(o.label), o.label]));
+				out[q.question] = a.map((x) => labels.get(x) ?? x);
+			}
+			return out;
+		};
 		// "Yes, and don't ask again": only a suggestion the core offered,
 		// with any destination. The call itself is allowed either way.
 		const remember = (offered: Suggestion[], chosen: Suggestion | null) => {

@@ -220,6 +220,25 @@ export const CoreRequests = {
 		reason: Type.String(),
 		suggestions: Type.Array(Suggestion),
 	}),
+	// The model's questions (ask_user), sent only to a front end that
+	// declared "user_ask". Never times out; an interrupt cancels it.
+	"user/ask": Type.Object({
+		tool_call_id: Type.String(),
+		questions: Type.Array(
+			Type.Object({
+				question: Type.String(),
+				header: Type.String(),
+				options: Type.Array(
+					Type.Object({
+						label: Type.String(),
+						description: Type.String(),
+						preview: Nullable(Type.String()),
+					}),
+				),
+				multiSelect: Type.Boolean(),
+			}),
+		),
+	}),
 };
 export const CoreResults = {
 	// `deny` with a `message`: the model is told and keeps going. Without one,
@@ -232,6 +251,14 @@ export const CoreResults = {
 		]),
 		suggestion: Nullable(Suggestion),
 		message: Nullable(Type.String()),
+	}),
+	// Question text → the chosen labels, or what the user typed. null: the
+	// user declined, and the turn stops.
+	"user/ask": Type.Object({
+		answers: Type.Union([
+			Type.Record(Type.String(), Type.Array(Type.String())),
+			Type.Null(),
+		]),
 	}),
 };
 

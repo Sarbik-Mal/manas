@@ -1116,3 +1116,148 @@ test("the mode is saved with the session and comes back; the request's mode wins
 	await c.waitFor(() => c.events("session/started").length > 0);
 	expect(c.events("session/started")[0].mode).toBe("manual");
 });
+
+// --- 2.8: ask_user ---
+
+const readyToAsk = async (c: ReturnType<typeof connect>, cwd = "E:\\x") => {
+	c.send("initialize", {
+		client: { name: "t", version: "0" },
+		capabilities: ["user_ask"],
+	});
+	c.send("session/new", { cwd });
+	await c.waitFor(() => c.events("session/started").length > 0);
+};
+const colors = [
+	{
+		question: "Which color?",
+		header: "Color",
+		options: [
+			{ label: "Blue", description: "calm", preview: null },
+			{ label: "Red", description: "loud", preview: null },
+		],
+		multiSelect: false,
+	},
+];
+const questionsAsked = (c: ReturnType<typeof connect>) =>
+	c.out.filter((m) => m.kind === "request" && m.type === "user/ask");
+
+test("ask_user is offered only to a front end that declared user_ask", async () => {
+	const a = connect(undefined, { tools: coreTools() });
+	await a.ready();
+	expect(a.events("session/started")[0].tools).not.toContain("ask_user");
+	const b = connect(undefined, { tools: coreTools() });
+	await readyToAsk(b);
+	expect(b.events("session/started")[0].tools).toContain("ask_user");
+});
+
+test("user/ask waits for the answer, which reaches the model; null stops the turn", async () => {
+	const c = connect(undefined, { tools: coreTools() });
+	await readyToAsk(c);
+	fake.replies.push(
+		{ items: [call("ask_user", { questions: colors })] },
+		say("blue it is"),
+		{ items: [call("ask_user", { questions: colors })] },
+	);
+	c.send("session/prompt", { text: "pick" });
+	await c.waitFor(() => questionsAsked(c).length === 1);
+	expect(questionsAsked(c)[0]).toMatchObject({
+		tool_call_id: c.events("tool/started")[0].tool_call_id,
+		questions: colors,
+	});
+	expect(c.states().at(-1)).toBe("waiting_for_user");
+	answer(c, questionsAsked(c)[0].id, { answers: { "Which color?": ["Blue"] } });
+	await c.waitFor(() => c.events("turn/finished").length === 1);
+	expect(c.events("tool/finished")[0].output).toBe(
+		'Your questions have been answered: "Which color?"="Blue". You can now continue with these answers in mind.',
+	);
+
+	c.send("session/prompt", { text: "again" });
+	await c.waitFor(() => questionsAsked(c).length === 2);
+	answer(c, questionsAsked(c)[1].id, { answers: null });
+	await c.waitFor(() => c.events("turn/finished").length === 2);
+	expect(c.events("tool/finished")[1]).toMatchObject({
+		status: "denied",
+		output: "error: the user declined to answer",
+	});
+	expect(c.events("turn/finished")[1].stop_reason).toBe("interrupted");
+});
+
+test("questions show real values; answers go back as the model wrote them", async () => {
+	const project = tempRoot();
+	const key = "sk-abcdefghijklmnopqrstuvwxyz123456";
+	writeFileSync(join(project, "app.ts"), `const key = "${key}";\n`);
+	const c = connect(undefined, { tools: coreTools() });
+	const placeholder = "[REDACTED:api_key#1]";
+	fake.replies.push(
+		{
+			items: [call("read", { file_path: "app.ts", offset: null, limit: null })],
+		},
+		{
+			items: [
+				call("ask_user", {
+					questions: [
+						{
+							question: `Rotate ${placeholder}?`,
+							header: "Key",
+							options: [
+								{
+									label: `Keep ${placeholder}`,
+									description: "",
+									preview: null,
+								},
+								{ label: "Rotate", description: "", preview: null },
+							],
+							multiSelect: false,
+						},
+					],
+				}),
+			],
+		},
+		say("ok"),
+	);
+	await readyToAsk(c, project);
+	c.send("session/prompt", { text: "check the key" });
+	await c.waitFor(() => questionsAsked(c).length === 1);
+	const shown = questionsAsked(c)[0].questions as typeof colors;
+	expect(shown[0].question).toBe(`Rotate ${key}?`);
+	expect(shown[0].options[0].label).toBe(`Keep ${key}`);
+	answer(c, questionsAsked(c)[0].id, {
+		answers: { [`Rotate ${key}?`]: [`Keep ${key}`] },
+	});
+	await c.waitFor(() => c.events("turn/finished").length === 1);
+	const sent = JSON.stringify(fake.bodies.at(-1));
+	expect(sent).toContain(
+		`\\"Rotate ${placeholder}?\\"=\\"Keep ${placeholder}\\"`,
+	);
+	expect(sent).not.toContain(key);
+	expect(c.events("tool/finished")[1].output).toStartWith(
+		"Your questions have been answered:",
+	);
+});
+
+test("a bad answer counts as declined; an interrupt withdraws the question", async () => {
+	const c = connect(undefined, { tools: coreTools() });
+	await readyToAsk(c);
+	fake.replies.push(
+		{ items: [call("ask_user", { questions: colors })] },
+		{ items: [call("ask_user", { questions: colors })] },
+	);
+	c.send("session/prompt", { text: "1" });
+	await c.waitFor(() => questionsAsked(c).length === 1);
+	answer(c, questionsAsked(c)[0].id, { answers: "Blue" });
+	await c.waitFor(() => c.events("turn/finished").length === 1);
+	expect(c.events("notice").at(-1)?.text).toBe(
+		"The front end sent an invalid answer to the questions; treated as declined.",
+	);
+	expect(c.events("turn/finished")[0].stop_reason).toBe("interrupted");
+
+	c.send("session/prompt", { text: "2" });
+	await c.waitFor(() => questionsAsked(c).length === 2);
+	c.send("session/interrupt");
+	await c.waitFor(() => c.events("turn/finished").length === 2);
+	expect(c.out).toContainEqual({
+		kind: "cancel",
+		id: questionsAsked(c)[1].id,
+		reason: "interrupted",
+	});
+});
