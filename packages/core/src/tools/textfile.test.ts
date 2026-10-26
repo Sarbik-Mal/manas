@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Vault } from "../safety/scrub";
 import { tempRoot } from "../testing/fake-openai";
+import { NO_BACKUPS } from "./backups";
 import { edit } from "./edit";
 import { read } from "./files";
 import { fileKey, readRecord } from "./reads";
@@ -29,6 +30,7 @@ function project(files: Record<string, string | Uint8Array> = {}) {
 		denied: () => undefined,
 		reads: readRecord(),
 		vault: new Vault(),
+		backups: NO_BACKUPS,
 	};
 	const look = (file_path: string) =>
 		read.run({ file_path, offset: null, limit: null }, ctx);

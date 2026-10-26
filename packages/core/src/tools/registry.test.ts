@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import Type, { type TSchema } from "typebox";
 import { Vault } from "../safety/scrub";
+import { NO_BACKUPS } from "./backups";
 import { readRecord } from "./reads";
 import { buildRegistry, callTool, defineTool, type Tool } from "./registry";
 
@@ -52,6 +53,7 @@ const ctx = {
 	denied: () => undefined,
 	reads: readRecord(),
 	vault: new Vault(),
+	backups: NO_BACKUPS,
 };
 const call = (name: string, args: unknown) =>
 	callTool(

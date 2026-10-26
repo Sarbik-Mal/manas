@@ -3,6 +3,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Vault } from "../safety/scrub";
 import { tempRoot } from "../testing/fake-openai";
+import { NO_BACKUPS } from "./backups";
 import { cut, powershell } from "./powershell";
 import { readRecord } from "./reads";
 import { buildRegistry, callTool } from "./registry";
@@ -13,6 +14,7 @@ const ctxFor = (cwd: string, signal = new AbortController().signal) => ({
 	denied: () => undefined,
 	reads: readRecord(),
 	vault: new Vault(),
+	backups: NO_BACKUPS,
 });
 const input = (command: string, timeout: number | null = null) => ({
 	command,

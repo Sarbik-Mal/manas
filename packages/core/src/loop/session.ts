@@ -3,6 +3,7 @@ import { capability, checkEffort } from "../provider/models";
 import type { Usage } from "../provider/openai";
 import { scrubItem, type Vault } from "../safety/scrub";
 import { CUT_OFF, type Store, textOf } from "../session/store";
+import type { Backups } from "../tools/backups";
 import type { Permit, Registry, SessionCtx } from "../tools/registry";
 import { dateNote, today as localToday } from "./prompt";
 import { type LoopEvent, runTurn } from "./turn";
@@ -49,6 +50,7 @@ export function createSession({
 	vault,
 	ready,
 	toolCtx,
+	backups,
 	context,
 	today = localToday,
 	verbosity,
@@ -68,6 +70,8 @@ export function createSession({
 	permit?: Permit;
 	// The project folder and deny check every tool call gets.
 	toolCtx?: SessionCtx;
+	// A checkpoint when each turn starts (2.5); the same backups as toolCtx's.
+	backups?: Backups;
 	// The first message of a new session (its environment), sent before the
 	// first prompt; a resumed session already has it.
 	context?: () => string;
@@ -130,6 +134,9 @@ export function createSession({
 					history.length === 0 ? context() : dateNote(history, today());
 				if (note) history.push({ role: "developer", content: note });
 			}
+			// The code as it is before this prompt, for /rewind (2.6). Prompts
+			// folded into a running turn get none, as in Claude Code.
+			await backups?.checkpoint(history.length);
 			const turnId = `t${++turns}`;
 			let messageId: string | undefined;
 			for await (const e of runTurn(history, deliver(q), {

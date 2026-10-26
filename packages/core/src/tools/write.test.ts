@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Vault } from "../safety/scrub";
 import { tempRoot } from "../testing/fake-openai";
+import { NO_BACKUPS } from "./backups";
 import { read } from "./files";
 import { readRecord } from "./reads";
 import type { ToolCtx } from "./registry";
@@ -18,6 +19,7 @@ function project(files: Record<string, string | Uint8Array>) {
 		denied: (p) => (p.endsWith("denied.ts") ? "Read(denied.ts)" : undefined),
 		reads: readRecord(),
 		vault: new Vault(),
+		backups: NO_BACKUPS,
 	};
 	const look = (file_path = "a.ts") =>
 		read.run({ file_path, offset: null, limit: null }, ctx);

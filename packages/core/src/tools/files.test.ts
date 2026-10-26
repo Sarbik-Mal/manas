@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { deniedPath } from "../permissions/engine";
 import { Vault } from "../safety/scrub";
 import { tempRoot } from "../testing/fake-openai";
+import { NO_BACKUPS } from "./backups";
 import { glob, grep, read } from "./files";
 import { readRecord } from "./reads";
 import type { ToolCtx } from "./registry";
@@ -28,6 +29,7 @@ function project(
 		denied: (p) => deniedPath(p, rules, cwd),
 		reads: readRecord(),
 		vault: new Vault(),
+		backups: NO_BACKUPS,
 	};
 	return { cwd, ctx };
 }

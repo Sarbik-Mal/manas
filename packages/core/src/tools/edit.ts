@@ -19,7 +19,7 @@ import {
 // that can't apply. The file keeps its encoding, and only the changed lines
 // change: old and new get the file's line ending, and the match runs on the
 // raw text, so a mixed file stays mixed (Claude Code rewrites every line).
-// ponytail: no backup until 2.5. No \uXXXX swap as Claude Code tries (rare,
+// ponytail: no \uXXXX swap as Claude Code tries (rare,
 // and it was reported breaking exact matches).
 
 const MAX_BYTES = 1024 ** 3; // Claude Code's limit
@@ -240,11 +240,13 @@ export const edit = defineTool({
 		plans.delete(i);
 		p ??= await plan(i, ctx);
 		if (typeof p === "string") throw new Error(p);
-		if (sha256(await readBytes(p.path, i.file_path)) !== p.hash) {
+		const now = await readBytes(p.path, i.file_path);
+		if (sha256(now) !== p.hash) {
 			throw new Error(
 				`${i.file_path} changed while waiting for approval. Read it again.`,
 			);
 		}
+		ctx.backups.before(p.path, now);
 		const mtime = await writeVerified(p.path, p.bytes, i.file_path);
 		const before = ctx.reads.get(p.path);
 		ctx.reads.set(p.path, {

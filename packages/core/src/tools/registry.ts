@@ -2,6 +2,7 @@ import type { Static, TSchema } from "typebox";
 import Value from "typebox/value";
 import type { ToolSpec } from "../provider/openai";
 import type { Vault } from "../safety/scrub";
+import type { Backups } from "./backups";
 import type { ReadRecord } from "./reads";
 
 // What every tool gets. Grows as parts are built: session, ask, vault,
@@ -17,6 +18,8 @@ export type ToolCtx = {
 	reads: ReadRecord;
 	// The session's secrets: file writes put the real values back (2.2).
 	vault: Vault;
+	// Copies of files before edit or write changes them (2.5).
+	backups: Backups;
 };
 // What a session hands every call; `signal` is per turn.
 export type SessionCtx = Omit<ToolCtx, "signal">;

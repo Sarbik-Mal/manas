@@ -78,15 +78,16 @@ export const write = defineTool({
 		plans.delete(i);
 		p ??= await plan(i, ctx);
 		if (typeof p === "string") throw new Error(p);
+		const now =
+			p.hash === undefined ? null : await readBytes(p.path, i.file_path);
 		const changed =
-			p.hash === undefined
-				? statOf(p.path) !== undefined
-				: sha256(await readBytes(p.path, i.file_path)) !== p.hash;
+			now === null ? statOf(p.path) !== undefined : sha256(now) !== p.hash;
 		if (changed) {
 			throw new Error(
 				`${i.file_path} changed while waiting for approval. Read it again.`,
 			);
 		}
+		ctx.backups.before(p.path, now);
 		const mtime = await writeVerified(p.path, p.bytes, i.file_path);
 		// The model wrote all of it, so it has the whole file in view.
 		ctx.reads.set(p.path, {

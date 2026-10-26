@@ -34,6 +34,7 @@ import {
 	projectDir,
 	sessionFile,
 } from "../session/store";
+import { openBackups } from "../tools/backups";
 import { readRecord } from "../tools/reads";
 import { buildRegistry, describeErrors, type Tool } from "../tools/registry";
 
@@ -343,17 +344,21 @@ export function createHost(
 				`Couldn't load .env values into the vault: ${err.message}`,
 			),
 		);
+		// The project's backups/ sits beside its sessions/ (memory-management.md).
+		const backups = openBackups(join(dirname(dirname(file)), "backups"), id);
 		const s = createSession({
 			registry,
 			vault: v,
 			ready,
 			context: () => firstMessage(cwd),
 			verbosity,
+			backups,
 			toolCtx: {
 				cwd,
 				denied: (path) => deniedPath(path, settings.current.rules, cwd),
 				reads: readRecord(loaded?.reads, (r) => store.read(r)),
 				vault: v,
+				backups,
 			},
 			permit: async ({ tool, input, callId, diff }) => {
 				const d = await decide(tool, input, {

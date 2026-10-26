@@ -2,7 +2,14 @@ import { afterAll, beforeEach, expect, test } from "bun:test";
 import type { ResponseInputItem } from "openai/resources/responses/responses";
 import Type from "typebox";
 import { CUT_OFF } from "../session/store";
-import { call, fakeOpenAI, message, say } from "../testing/fake-openai";
+import {
+	call,
+	fakeOpenAI,
+	message,
+	say,
+	tempRoot,
+} from "../testing/fake-openai";
+import { type Backups, openBackups } from "../tools/backups";
 import { buildRegistry, defineTool } from "../tools/registry";
 import { createSession, replayEvents, type SessionEvent } from "./session";
 
@@ -26,12 +33,13 @@ const gate = defineTool({
 		}),
 });
 
-function start() {
+function start(extra: { backups?: Backups } = {}) {
 	const events: SessionEvent[] = [];
 	const session = createSession({
 		registry: buildRegistry([gate]),
 		model: "gpt-5.6-luna",
 		emit: (e) => events.push(e),
+		...extra,
 	});
 	const waitFor = async (pred: (e: SessionEvent[]) => boolean) => {
 		for (let i = 0; i < 400 && !pred(events); i++) await Bun.sleep(5);
@@ -97,6 +105,25 @@ test("`next` joins the running turn after its tools; `later` waits for the turn"
 	expect(order.indexOf(next)).toBeGreaterThan(order.indexOf("tool_finished"));
 	expect(order.indexOf(later)).toBeGreaterThan(order.indexOf("turn_finished"));
 	expect(events.filter((e) => e.type === "idle")).toHaveLength(1);
+});
+
+test("a checkpoint when each turn starts; a prompt folded into a turn gets none", async () => {
+	const backups = openBackups(tempRoot(), "s1");
+	const { session, waitFor, idles, has } = start({ backups });
+	replies.push(
+		{ items: [call("gate", {})] },
+		say("round two"),
+		say("later turn"),
+	);
+	session.prompt("go");
+	await waitFor(has("tool_started"));
+	session.prompt("after", "later");
+	session.prompt("also", "next");
+	open();
+	await waitFor(idles(1));
+	// "go" started at an empty history; "after" after go's turn (user, call,
+	// result, folded "also", reply). "also" has no checkpoint of its own.
+	expect(backups.list().map((c) => c.items)).toEqual([0, 5]);
 });
 
 test("`now` interrupts the running turn, then runs", async () => {

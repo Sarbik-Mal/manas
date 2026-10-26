@@ -4,6 +4,7 @@ import type {
 } from "openai/resources/responses/responses";
 import { streamResponse, type Usage } from "../provider/openai";
 import { Vault } from "../safety/scrub";
+import { NO_BACKUPS } from "../tools/backups";
 import { readRecord } from "../tools/reads";
 import {
 	buildRegistry,
@@ -56,6 +57,7 @@ export async function* runTurn(
 			denied: () => undefined,
 			reads: readRecord(),
 			vault: new Vault(),
+			backups: NO_BACKUPS,
 		},
 		...opts
 	}: {
