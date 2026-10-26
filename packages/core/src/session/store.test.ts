@@ -53,12 +53,22 @@ test("load: round-trip, latest change wins, damaged lines skipped", () => {
 	store.set({ effort: "low" });
 	store.set({ model: "gpt-5.6-luna" });
 	store.item({ role: "assistant", content: "hello" });
+	const read = {
+		path: "e:\\p\\a.ts",
+		hash: "h",
+		mtime: 1,
+		offset: null,
+		limit: 5,
+		partial: false,
+	};
+	store.read(read);
 	appendFileSync(file, '{"kind":"item","item":{"role":"us'); // killed mid-write
 	const loaded = loadSession(file);
 	expect(loaded.items).toEqual([
 		{ role: "user", content: "hi" },
 		{ role: "assistant", content: "hello" },
 	]);
+	expect(loaded.reads).toEqual([read]);
 	expect(loaded).toMatchObject({
 		model: "gpt-5.6-luna",
 		effort: "low",

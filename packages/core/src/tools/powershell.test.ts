@@ -3,12 +3,14 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tempRoot } from "../testing/fake-openai";
 import { cut, powershell } from "./powershell";
+import { readRecord } from "./reads";
 import { buildRegistry, callTool } from "./registry";
 
 const ctxFor = (cwd: string, signal = new AbortController().signal) => ({
 	signal,
 	cwd,
 	denied: () => undefined,
+	reads: readRecord(),
 });
 const input = (command: string, timeout: number | null = null) => ({
 	command,

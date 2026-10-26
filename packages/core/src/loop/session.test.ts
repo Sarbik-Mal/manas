@@ -257,6 +257,7 @@ test("with a store: items, usage and changes are saved", async () => {
 			saved.push(`item ${"role" in i ? i.role : i.type}`),
 		set: (c: object) => saved.push(`set ${JSON.stringify(c)}`),
 		usage: (t: string) => saved.push(`usage ${t}`),
+		read: () => {},
 	};
 	const events: SessionEvent[] = [];
 	const session = createSession({

@@ -1,6 +1,7 @@
 import type { Static, TSchema } from "typebox";
 import Value from "typebox/value";
 import type { ToolSpec } from "../provider/openai";
+import type { ReadRecord } from "./reads";
 
 // What every tool gets. Grows as parts are built: session, ask, vault,
 // backups, scratch, emit (architecture.md 0b, rule 2).
@@ -11,6 +12,8 @@ export type ToolCtx = {
 	// The deny rule covering an absolute path for reading, if any. Search
 	// results drop such files (as Claude Code does for Grep and Glob).
 	denied: (path: string) => string | undefined;
+	// What the model has read (2.1), for edit and write's read-first rule.
+	reads: ReadRecord;
 };
 // What a session hands every call; `signal` is per turn.
 export type SessionCtx = Omit<ToolCtx, "signal">;

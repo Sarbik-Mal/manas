@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import Type, { type TSchema } from "typebox";
+import { readRecord } from "./reads";
 import { buildRegistry, callTool, defineTool, type Tool } from "./registry";
 
 const strict = { additionalProperties: false } as const;
@@ -44,7 +45,12 @@ const boom = tool("boom", Type.Object({}, strict), {
 });
 const registry = buildRegistry([read, later, boom]);
 const signal = new AbortController().signal;
-const ctx = { signal, cwd: process.cwd(), denied: () => undefined };
+const ctx = {
+	signal,
+	cwd: process.cwd(),
+	denied: () => undefined,
+	reads: readRecord(),
+};
 const call = (name: string, args: unknown) =>
 	callTool(
 		registry,

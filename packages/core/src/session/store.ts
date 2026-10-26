@@ -11,6 +11,7 @@ import type {
 	ResponseFunctionToolCall,
 	ResponseInputItem,
 } from "openai/resources/responses/responses";
+import type { Read } from "../tools/reads";
 
 // Sessions on disk (memory-management.md): one append-only .jsonl per session,
 // in a readable folder per project, as Claude Code does.
@@ -37,7 +38,9 @@ type Line =
 	| ({ kind: "start" } & Start)
 	| { kind: "item"; item: ResponseInputItem }
 	| { kind: "set"; model?: string; effort?: string | null }
-	| { kind: "usage"; turn_id: string; usage: Usage };
+	| { kind: "usage"; turn_id: string; usage: Usage }
+	// What the model read (2.1): path, hash and time, never content.
+	| { kind: "read"; read: Read };
 
 export const CUT_OFF =
 	"cut off: Manas ended before this finished. Check whether it took effect before running it again.";
@@ -85,6 +88,9 @@ export function openStore(
 		usage(turn_id: string, usage: Usage) {
 			if (exists) write({ kind: "usage", turn_id, usage });
 		},
+		read(read: Read) {
+			if (exists) write({ kind: "read", read });
+		},
 	};
 }
 export type Store = ReturnType<typeof openStore>;
@@ -92,6 +98,7 @@ export type Store = ReturnType<typeof openStore>;
 export type Loaded = {
 	start: Start;
 	items: ResponseInputItem[];
+	reads: Read[];
 	model: string;
 	effort: string | null;
 	skipped: number;
@@ -115,8 +122,10 @@ export function loadSession(file: string): Loaded {
 	if (!start) throw new Error(`${basename(file)} has no start line`);
 	let { model, effort } = start;
 	const items: ResponseInputItem[] = [];
+	const reads: Read[] = [];
 	for (const l of lines) {
 		if (l.kind === "item") items.push(l.item);
+		if (l.kind === "read") reads.push(l.read);
 		if (l.kind === "set") {
 			model = l.model ?? model;
 			if (l.effort !== undefined) effort = l.effort;
@@ -139,7 +148,7 @@ export function loadSession(file: string): Loaded {
 		items.push(fix);
 		appendFileSync(file, `${JSON.stringify({ kind: "item", item: fix })}\n`);
 	}
-	return { start, items, model, effort, skipped };
+	return { start, items, reads, model, effort, skipped };
 }
 
 export type Listed = {

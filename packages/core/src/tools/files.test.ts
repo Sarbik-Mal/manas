@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { deniedPath } from "../permissions/engine";
 import { tempRoot } from "../testing/fake-openai";
 import { glob, grep, read } from "./files";
+import { readRecord } from "./reads";
 import type { ToolCtx } from "./registry";
 
 function project(
@@ -24,6 +25,7 @@ function project(
 		signal: new AbortController().signal,
 		cwd,
 		denied: (p) => deniedPath(p, rules, cwd),
+		reads: readRecord(),
 	};
 	return { cwd, ctx };
 }
@@ -127,6 +129,41 @@ test("read: empty, past the end, folders, binary, missing, UTF-16", async () => 
 	expect(await read.run(R({ file_path: "bom.txt" }), ctx)).toBe(
 		"     1\tfirst",
 	);
+});
+
+test("read: recorded; the same part of an unchanged file comes back as a stub", async () => {
+	const wide = Array.from({ length: 60 }, () => "y".repeat(2000)).join("\n");
+	const { ctx, cwd } = project({
+		"a.txt": "one\ntwo\n",
+		"empty.txt": "",
+		"wide.txt": wide,
+	});
+	const first = await read.run(R({}), ctx);
+	expect(first).toContain("one");
+	expect(ctx.reads.get(join(cwd, "A.TXT"))).toMatchObject({
+		offset: null,
+		limit: null,
+		partial: false,
+	});
+	expect(await read.run(R({}), ctx)).toStartWith("File unchanged");
+	// Another part, or a changed file, is read in full.
+	expect(await read.run(R({ limit: 1 }), ctx)).toContain("one");
+	expect(await read.run(R({ limit: 1 }), ctx)).toStartWith("File unchanged");
+	writeFileSync(join(cwd, "a.txt"), "uno\ntwo\n");
+	expect(await read.run(R({ limit: 1 }), ctx)).toContain("uno");
+	// An empty file counts; a cut-off view is marked; errors and past-the-end
+	// reads leave nothing.
+	await read.run(R({ file_path: "empty.txt" }), ctx);
+	expect(ctx.reads.get(join(cwd, "empty.txt"))).toBeDefined();
+	await read.run(R({ file_path: "wide.txt" }), ctx);
+	expect(ctx.reads.get(join(cwd, "wide.txt"))?.partial).toBe(true);
+	const { ctx: fresh } = project({ "a.txt": "one\n", "w.txt": wide });
+	await read.run(R({ offset: 5 }), fresh);
+	await expect(
+		read.run(R({ file_path: "w.txt", offset: 1, limit: 60 }), fresh),
+	).rejects.toThrow();
+	expect(fresh.reads.get(join(fresh.cwd, "a.txt"))).toBeUndefined();
+	expect(fresh.reads.get(join(fresh.cwd, "w.txt"))).toBeUndefined();
 });
 
 test("glob: dotfiles and ignored files found, .git skipped, newest first, denied dropped", async () => {

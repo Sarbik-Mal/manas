@@ -2,6 +2,7 @@ import { readFileSync, statSync } from "node:fs";
 import { extname, isAbsolute, relative, resolve } from "node:path";
 import Type, { type TSchema } from "typebox";
 import { rgPath } from "../platform/win/bin";
+import { sha256 } from "./reads";
 import { defineTool, type ToolCtx } from "./registry";
 
 // read, grep and glob (tools.md §1), shaped like Claude Code's: same inputs,
@@ -27,6 +28,11 @@ const MAX_BYTES = 256 * 1024;
 const MAX_CHARS = 25_000 * 4;
 const UNSUPPORTED =
 	/\.(xlsx?|xlsm|docx?|pptx?|pdf|zip|7z|rar|gz|tar|exe|dll|parquet|png|jpe?g|gif|webp|bmp|ico|heic|mp3|mp4|wav|mov)$/i;
+
+// ponytail: points at an earlier result, so compaction (when it comes) must
+// clear the read record, or the model is sent to text it no longer has.
+const UNCHANGED =
+	"File unchanged since last read. The content from the earlier read result in this conversation is still current; refer to that instead of re-reading.";
 
 // UTF-8 (a BOM is dropped) or UTF-16 by its BOM; anything else with a NUL
 // byte early on is binary.
@@ -79,10 +85,29 @@ export const read = defineTool({
 				`${file_path} is ${Math.round(size / 1024)} KB, over the 256 KB limit for a whole-file read. Read it in parts with offset and limit, or search it with grep.`,
 			);
 		}
-		const text = decode(readFileSync(path));
+		const bytes = readFileSync(path);
+		const text = decode(bytes);
 		if (text === undefined)
 			throw new Error(`${file_path} is a binary file, not text`);
-		if (text === "") return `${file_path} exists but is empty.`;
+		// The same part of an unchanged file: the earlier result still holds
+		// (Claude Code's wording), so it isn't sent twice.
+		const hash = sha256(bytes);
+		const seen = ctx.reads.get(path);
+		if (seen?.hash === hash && seen.offset === offset && seen.limit === limit) {
+			return UNCHANGED;
+		}
+		const record = (partial: boolean) =>
+			ctx.reads.set(path, {
+				hash,
+				mtime: info.mtimeMs,
+				offset,
+				limit,
+				partial,
+			});
+		if (text === "") {
+			record(false);
+			return `${file_path} exists but is empty.`;
+		}
 		const lines = text.split(/\r?\n/);
 		if (lines.at(-1) === "") lines.pop();
 		const start = offset ?? 1;
@@ -108,6 +133,7 @@ export const read = defineTool({
 				`line ${start} of ${file_path} alone is over the ~25K token limit; search it with grep.`,
 			);
 		}
+		record(last < end);
 		if (last < end) {
 			out += `\nPARTIAL view: the file is over the ~25K token limit for one read. Showing lines ${start}-${last} of ${lines.length}; read the rest with offset and limit.`;
 		} else if (start > 1 || last < lines.length) {

@@ -34,6 +34,7 @@ import {
 	projectDir,
 	sessionFile,
 } from "../session/store";
+import { readRecord } from "../tools/reads";
 import { buildRegistry, describeErrors, type Tool } from "../tools/registry";
 
 type Fail = { code: string; message: string };
@@ -351,6 +352,7 @@ export function createHost(
 			toolCtx: {
 				cwd,
 				denied: (path) => deniedPath(path, settings.current.rules, cwd),
+				reads: readRecord(loaded?.reads, (r) => store.read(r)),
 			},
 			permit: async ({ tool, input, callId }) => {
 				const d = await decide(tool, input, {
