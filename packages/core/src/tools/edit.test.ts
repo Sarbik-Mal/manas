@@ -62,7 +62,9 @@ test("exact match, duplicates, replace_all; the record follows the edit", async 
 	);
 	const input = E("y = 2;", "y = 4;");
 	expect(await edit.validate?.(input, ctx)).toBeUndefined();
-	expect(edit.preview?.(input)).toBe("line 3:\n- y = 2;\n+ y = 4;");
+	expect(edit.preview?.(input)).toBe(
+		"line 1:\n  x = 1;\n  x = 1;\n- y = 2;\n+ y = 4;",
+	);
 	expect(await edit.run(input, ctx)).toBe(
 		"The file a.ts has been updated successfully. (file state is current in your context; no need to read it back)",
 	);

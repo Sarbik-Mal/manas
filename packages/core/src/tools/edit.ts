@@ -1,6 +1,7 @@
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import Type from "typebox";
+import { showDiff } from "./diff";
 import { sha256 } from "./reads";
 import { defineTool, type ToolCtx } from "./registry";
 
@@ -13,13 +14,10 @@ import { defineTool, type ToolCtx } from "./registry";
 // reported breaking exact matches).
 
 const MAX_BYTES = 1024 ** 3; // Claude Code's limit
-// ponytail: v1's 20 rows, so a big edit is approved partly unseen; a full,
-// scrollable diff comes with the Ink screen or an editor's open_diff.
-const DIFF_ROWS = 20;
 
-const NOT_READ =
+export const NOT_READ =
 	"File has not been read yet. Read it first before writing to it.";
-const STALE =
+export const STALE =
 	"File has been modified since read, either by the user or by a linter. Read it again before attempting to write it.";
 
 type Input = {
@@ -94,54 +92,45 @@ export function findLoose(
 	};
 }
 
-// v1's: the first changed line, then the old and new lines.
-function miniDiff(line: number, old: string, neu: string, more: number) {
-	const rows = [
-		`line ${line}:`,
-		...old.split("\n").map((l) => `- ${l}`),
-		...(neu ? neu.split("\n").map((l) => `+ ${l}`) : []),
-	];
-	const out =
-		rows.length <= DIFF_ROWS
-			? rows
-			: [
-					...rows.slice(0, DIFF_ROWS),
-					`… ${rows.length - DIFF_ROWS} more lines`,
-				];
-	if (more > 0)
-		out.push(`(and ${more} more ${more === 1 ? "place" : "places"})`);
-	return out.join("\n");
-}
-
-// Every check, in Claude Code's order. Returns why the edit can't apply, or
-// what it will do.
-async function plan(i: Input, ctx: ToolCtx): Promise<string | Plan> {
-	// The model sees placeholders; the file gets the real values.
-	const o = ctx.vault.restore(i.old_string);
-	const n = ctx.vault.restore(i.new_string);
-	const unknown = [...o.unknown, ...n.unknown];
+// What edit and write share: placeholders back to real values, or why not.
+export function restoreAll(ctx: ToolCtx, ...texts: string[]) {
+	const out = texts.map((t) => ctx.vault.restore(t));
+	const unknown = out.flatMap((o) => o.unknown);
 	if (unknown.length > 0)
 		return `${unknown[0]} isn't a placeholder this session knows; read the file again to get a current one.`;
-	const old = o.text;
-	const neu = n.text;
-	if (old === neu)
-		return "No changes to make: old_string and new_string are exactly the same.";
-	const path = resolve(ctx.cwd, i.file_path);
+	return out.map((o) => o.text);
+}
+
+// The checks before a file is changed, in Claude Code's order: a missing
+// file (write creates it), or its text and whether it changed since the read.
+export function openForChange(
+	ctx: ToolCtx,
+	file_path: string,
+	verb: "edited" | "written",
+):
+	| string
+	| { path: string; missing: true }
+	| {
+			path: string;
+			missing: false;
+			text: string;
+			hash: string;
+			stale: boolean;
+	  } {
+	const path = resolve(ctx.cwd, file_path);
 	if (ctx.denied(path))
-		return "File is covered by a Read deny rule in your permission settings and cannot be edited.";
-	if (old === "")
-		return "old_string is empty. edit only replaces existing text; it can't create a file.";
+		return `File is covered by a Read deny rule in your permission settings and cannot be ${verb}.`;
 	const info = statSync(path, { throwIfNoEntry: false });
-	if (!info) return `File does not exist: ${i.file_path}`;
-	if (info.isDirectory()) return `${i.file_path} is a folder, not a file.`;
+	if (!info) return { path, missing: true };
+	if (info.isDirectory()) return `${file_path} is a folder, not a file.`;
 	if (/\.ipynb$/i.test(path))
-		return `${i.file_path} is a Jupyter notebook; editing notebooks isn't supported yet.`;
+		return `${file_path} is a Jupyter notebook; changing notebooks isn't supported yet.`;
 	if (info.size > MAX_BYTES)
-		return `${i.file_path} is too large to edit (over 1 GiB).`;
+		return `${file_path} is too large to change (over 1 GiB).`;
 
 	const bytes = readFileSync(path);
 	const unsupported = (what: string) =>
-		`${i.file_path} ${what}; editing such files isn't supported yet. Tell the user, and don't change it through the shell.`;
+		`${file_path} ${what}; changing such files isn't supported yet. Tell the user, and don't change it through the shell.`;
 	if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf)
 		return unsupported("starts with a UTF-8 byte-order mark");
 	if (
@@ -162,10 +151,26 @@ async function plan(i: Input, ctx: ToolCtx): Promise<string | Plan> {
 	const seen = ctx.reads.get(path);
 	if (!seen) return NOT_READ;
 	if (seen.partial)
-		return "File has only been read in part (a PARTIAL view). Read the rest with offset and limit before editing it.";
+		return "File has only been read in part (a PARTIAL view). Read the rest with offset and limit before changing it.";
 	const hash = sha256(bytes);
-	// Changed since the read: only an exact, unambiguous match is safe.
-	const stale = seen.hash !== hash;
+	return { path, missing: false, text, hash, stale: seen.hash !== hash };
+}
+
+// Every check, in Claude Code's order. Returns why the edit can't apply, or
+// what it will do.
+async function plan(i: Input, ctx: ToolCtx): Promise<string | Plan> {
+	// The model sees placeholders; the file gets the real values.
+	const restored = restoreAll(ctx, i.old_string, i.new_string);
+	if (typeof restored === "string") return restored;
+	const [old, neu] = restored;
+	if (old === neu)
+		return "No changes to make: old_string and new_string are exactly the same.";
+	if (old === "")
+		return "old_string is empty. edit only replaces existing text; to create a file, use write.";
+	const file = openForChange(ctx, i.file_path, "edited");
+	if (typeof file === "string") return file;
+	if (file.missing) return `File does not exist: ${i.file_path}`;
+	const { path, text, hash, stale } = file;
 
 	const all = i.replace_all === true;
 	const exact = find(text, old);
@@ -197,14 +202,7 @@ async function plan(i: Input, ctx: ToolCtx): Promise<string | Plan> {
 	let after = text;
 	for (const s of [...spans].reverse())
 		after = after.slice(0, s.start) + neu + after.slice(s.end);
-	const first = spans[0];
-	const line = text.slice(0, first.start).split("\n").length;
-	const diff = miniDiff(
-		line,
-		text.slice(first.start, first.end),
-		neu,
-		spans.length - 1,
-	);
+	const diff = showDiff(text, after);
 	return { path, hash, after, diff, how, stale };
 }
 
@@ -217,7 +215,7 @@ export const edit = defineTool({
 	description:
 		"Replaces exact text in a file. Read the file first in this conversation, or the edit fails. " +
 		"old_string must match the file exactly, including indentation, and appear once; leave out read's line-number prefix (number + tab). " +
-		"Set replace_all to true to replace every copy.",
+		"Set replace_all to true to replace every copy. To create a file or replace it whole, use write.",
 	schema: Type.Object(
 		{
 			file_path: Type.String({ description: "The file to change." }),

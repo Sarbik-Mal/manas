@@ -5,6 +5,7 @@
 	"type": "module",
 	"dependencies": {
 		"@manas/protocol": "workspace:*",
+		"diff": "9.0.0",
 		"openai": "^7.43.0",
 		"typebox": "^1.4.3"
 	},

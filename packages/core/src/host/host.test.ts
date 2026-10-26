@@ -687,6 +687,7 @@ test("the real tools run in the session's folder, and a Read deny filters grep",
 	expect(c.events("session/started")[0].tools).toEqual([
 		"read",
 		"edit",
+		"write",
 		"grep",
 		"glob",
 		"powershell",
@@ -819,7 +820,7 @@ test("an edit shows its diff with real values, and writes them to the file", asy
 	expect(asked(c)[0]).toMatchObject({
 		tool: "edit",
 		title: "edit app.ts",
-		diff: `line 1:\n- const key = "${key}";\n+ const apiKey = "${key}";`,
+		diff: `line 1:\n- const key = "${key}";\n+ const apiKey = "${key}";\n  const n = 1;`,
 	});
 	answer(c, asked(c)[0].id, { decision: "allow" });
 	await c.waitFor(() => c.events("turn/finished").length === 1);
