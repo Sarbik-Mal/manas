@@ -1,0 +1,7 @@
+services:
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgres://shop:{{URL_PASSWORD}}@db:5432/shop
+  db:
+    image: postgres:16

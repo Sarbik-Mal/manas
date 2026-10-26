@@ -1,5 +1,7 @@
 /planning_docs
 .env
+# Eval fixtures: placeholders only, filled with fresh fake secrets per run.
+!evals/fixtures/**/.env
 node_modules/
 dist/
 evals/results/

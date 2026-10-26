@@ -10,5 +10,7 @@
 		"types": ["bun"],
 		"jsx": "react-jsx"
 	},
-	"include": ["packages/*/src", "packages/*/scripts", "evals"]
+	"include": ["packages/*/src", "packages/*/scripts", "evals"],
+	// Sample projects the evals run on, not our code.
+	"exclude": ["evals/fixtures"]
 }

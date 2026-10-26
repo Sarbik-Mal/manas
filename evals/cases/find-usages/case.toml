@@ -1,0 +1,26 @@
+# Milestone 1: find every use of a function, and not its look-alike's.
+task = "Where is applyDiscount used?"
+fixture = "ts-shop"
+sets = ["smoke", "full"]
+limits = { cost_usd = 0.03 }
+
+[[check]]
+type = "reply"
+contains = "cart.ts"
+
+[[check]]
+type = "reply"
+contains = "orders.ts"
+
+[[check]]
+type = "reply"
+contains = "checkout.ts"
+
+# Only applyDiscountLegacy is used there.
+[[check]]
+type = "reply_not"
+contains = "report.ts"
+
+[[check]]
+type = "tool_used"
+tool = "grep"

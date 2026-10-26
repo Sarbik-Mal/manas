@@ -1,0 +1,21 @@
+# Milestone 1: a broad question gets a short, correct, structured answer.
+task = "Explain this repo"
+fixture = "ts-shop"
+sets = ["smoke", "full"]
+limits = { cost_usd = 0.05 }
+
+[[check]]
+type = "reply"
+contains = "cart"
+
+[[check]]
+type = "reply"
+contains = "discount"
+
+[[check]]
+type = "reply_max_words"
+max = 250
+
+[[check]]
+type = "tool_used"
+tool = "read"
