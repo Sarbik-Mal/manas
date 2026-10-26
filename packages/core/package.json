@@ -4,7 +4,8 @@
 	"private": true,
 	"type": "module",
 	"dependencies": {
-		"openai": "^7.43.0"
+		"openai": "^7.43.0",
+		"typebox": "^1.4.3"
 	},
 	"devDependencies": {
 		"@types/react": "^19.3.0",

@@ -2,12 +2,8 @@ import type {
 	ResponseFunctionToolCall,
 	ResponseInputItem,
 } from "openai/resources/responses/responses";
-import { streamResponse, type ToolSpec } from "../provider/openai";
-
-// Minimal tool shape until the registry (1.2) owns it.
-export type Tool = ToolSpec & {
-	run(input: unknown, ctx: { signal: AbortSignal }): Promise<string>;
-};
+import { streamResponse } from "../provider/openai";
+import { buildRegistry, callTool, type Registry } from "../tools/registry";
 
 export type LoopEvent =
 	| { type: "text"; delta: string }
@@ -33,27 +29,26 @@ export async function* runTurn(
 	history: ResponseInputItem[],
 	prompt: string,
 	{
-		tools = [],
+		registry = buildRegistry([]),
 		signal = new AbortController().signal,
 		...opts
 	}: {
 		model?: string;
 		effort?: string;
-		tools?: Tool[];
+		registry?: Registry;
 		signal?: AbortSignal;
 	} = {},
 ): AsyncGenerator<LoopEvent> {
 	history.push({ role: "user", content: prompt });
-	const specs = tools.map(({ name, description, parameters }) => ({
-		name,
-		description,
-		parameters,
-	}));
 	while (true) {
 		let text = "";
 		let output: ResponseInputItem[];
 		try {
-			const reply = streamResponse(history, { ...opts, tools: specs, signal });
+			const reply = streamResponse(history, {
+				...opts,
+				tools: registry.specs,
+				signal,
+			});
 			let r = await reply.next();
 			for (; !r.done; r = await reply.next()) {
 				text += r.value;
@@ -85,24 +80,17 @@ export async function* runTurn(
 			});
 		});
 		const started = calls.map((call) => {
+			// For the event only; callTool parses and checks it again.
 			let input: unknown = call.arguments;
-			let valid = true;
 			try {
 				input = JSON.parse(call.arguments);
-			} catch {
-				valid = false;
-			}
+			} catch {}
 			return {
 				call,
 				input,
 				// Raced, so a tool that ignores `signal` can't hold up an interrupt.
 				result: Promise.race([
-					valid
-						? runTool(tools, call, input, signal)
-						: ({
-								status: "error",
-								output: "error: arguments are not valid JSON",
-							} as const),
+					callTool(registry, call.name, call.arguments, { signal }),
 					interrupted.then(
 						() => ({ status: "interrupted", output: INTERRUPTED }) as const,
 					),
@@ -133,21 +121,5 @@ export async function* runTurn(
 			yield { type: "turn_finished", stopReason: "interrupted" };
 			return;
 		}
-	}
-}
-
-async function runTool(
-	tools: Tool[],
-	call: ResponseFunctionToolCall,
-	input: unknown,
-	signal: AbortSignal,
-): Promise<{ status: "ok" | "error"; output: string }> {
-	const tool = tools.find((t) => t.name === call.name);
-	if (!tool)
-		return { status: "error", output: `error: unknown tool "${call.name}"` };
-	try {
-		return { status: "ok", output: await tool.run(input, { signal }) };
-	} catch (err) {
-		return { status: "error", output: `error: ${(err as Error).message}` };
 	}
 }

@@ -4,6 +4,7 @@ import { enableDebugLog } from "./log/debug";
 import { runTurn } from "./loop/turn";
 import { rgPath } from "./platform/win/bin";
 import { protect, unprotect } from "./platform/win/dpapi";
+import { buildRegistry } from "./tools/registry";
 
 try {
 	const { values, positionals } = parseArgs({
@@ -24,7 +25,11 @@ try {
 	} else if (positionals.length === 1 && positionals[0] === "doctor") {
 		await doctor();
 	} else if (positionals.length > 0) {
-		for await (const e of runTurn([], positionals.join(" "), values)) {
+		const registry = buildRegistry([]);
+		for await (const e of runTurn([], positionals.join(" "), {
+			...values,
+			registry,
+		})) {
 			if (e.type === "text") process.stdout.write(e.delta);
 		}
 		process.stdout.write("\n");

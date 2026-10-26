@@ -1,6 +1,8 @@
 import { afterAll, beforeEach, expect, test } from "bun:test";
 import type { ResponseInputItem } from "openai/resources/responses/responses";
-import { type LoopEvent, runTurn, type Tool } from "./turn";
+import Type, { type TSchema } from "typebox";
+import { buildRegistry, defineTool, type Tool } from "../tools/registry";
+import { type LoopEvent, runTurn } from "./turn";
 
 // A scripted fake OpenAI: each request takes the next reply from `replies`.
 // A reply is the output items to send; `hold` sends one delta and stays open.
@@ -54,13 +56,29 @@ const call = (name: string, args: unknown) => ({
 	arguments: typeof args === "string" ? args : JSON.stringify(args),
 	status: "completed",
 });
-const tool = (name: string, run: Tool["run"]): Tool => ({
-	name,
-	description: name,
-	parameters: { type: "object", properties: {}, required: [] },
-	run,
-});
-const echo = tool("echo", async (input) => JSON.stringify(input));
+const tool = <S extends TSchema>(
+	name: string,
+	schema: S,
+	run: Tool<S>["run"],
+) =>
+	defineTool({
+		name,
+		description: name,
+		schema,
+		deferred: false,
+		readOnly: true,
+		run,
+	});
+const none = Type.Object({}, { additionalProperties: false });
+const echo = tool(
+	"echo",
+	Type.Object(
+		{ x: Type.Union([Type.String(), Type.Null()]) },
+		{ additionalProperties: false },
+	),
+	async (input) => JSON.stringify(input),
+);
+const tools = (...list: Tool[]) => ({ registry: buildRegistry(list) });
 
 const drain = async (gen: AsyncGenerator<LoopEvent>) => {
 	const events: LoopEvent[] = [];
@@ -97,7 +115,7 @@ test("a tool result goes back to the model, then it answers", async () => {
 	const c = call("echo", { x: "a" });
 	replies = [{ items: [c] }, say("done")];
 	const history: ResponseInputItem[] = [];
-	const events = await drain(runTurn(history, "go", { tools: [echo] }));
+	const events = await drain(runTurn(history, "go", tools(echo)));
 	expect(bodies).toHaveLength(2);
 	expect(bodies[1].input.at(-1)).toEqual({
 		type: "function_call_output",
@@ -115,25 +133,28 @@ test("a tool result goes back to the model, then it answers", async () => {
 test("calls run in parallel, results come back in call order", async () => {
 	let running = 0;
 	let peak = 0;
-	const wait = tool("wait", async (input) => {
-		const { ms } = input as { ms: number };
-		peak = Math.max(peak, ++running);
-		await Bun.sleep(ms);
-		running--;
-		return `waited ${ms}`;
-	});
+	const wait = tool(
+		"wait",
+		Type.Object({ ms: Type.Integer() }, { additionalProperties: false }),
+		async ({ ms }) => {
+			peak = Math.max(peak, ++running);
+			await Bun.sleep(ms);
+			running--;
+			return `waited ${ms}`;
+		},
+	);
 	replies = [
 		{ items: [call("wait", { ms: 50 }), call("wait", { ms: 5 })] },
 		say("ok"),
 	];
 	const history: ResponseInputItem[] = [];
-	await drain(runTurn(history, "go", { tools: [wait] }));
+	await drain(runTurn(history, "go", tools(wait)));
 	expect(peak).toBe(2);
 	expect(outputs(history)).toEqual(["waited 50", "waited 5"]);
 });
 
 test("unknown tool, bad JSON and a throwing tool go back as errors", async () => {
-	const boom = tool("boom", async () => {
+	const boom = tool("boom", none, async () => {
 		throw new Error("disk on fire");
 	});
 	replies = [
@@ -141,7 +162,7 @@ test("unknown tool, bad JSON and a throwing tool go back as errors", async () =>
 		say("ok"),
 	];
 	const history: ResponseInputItem[] = [];
-	const events = await drain(runTurn(history, "go", { tools: [echo, boom] }));
+	const events = await drain(runTurn(history, "go", tools(echo, boom)));
 	expect(outputs(history)).toEqual([
 		'error: unknown tool "nope"',
 		"error: arguments are not valid JSON",
@@ -175,13 +196,13 @@ test("an interrupt mid-stream keeps the partial text and stops", async () => {
 
 test("an interrupt during a stuck tool answers every call, and the next turn works", async () => {
 	// Ignores the signal on purpose: the loop must not wait for it.
-	const stuck = tool("stuck", () => new Promise(() => {}));
-	replies = [{ items: [call("echo", {}), call("stuck", {})] }];
+	const stuck = tool("stuck", none, () => new Promise(() => {}));
+	replies = [{ items: [call("echo", { x: null }), call("stuck", {})] }];
 	const ac = new AbortController();
 	const history: ResponseInputItem[] = [];
 	const events: LoopEvent[] = [];
 	for await (const e of runTurn(history, "go", {
-		tools: [echo, stuck],
+		...tools(echo, stuck),
 		signal: ac.signal,
 	})) {
 		events.push(e);
@@ -210,7 +231,7 @@ test("reasoning items are sent back on the next round", async () => {
 		summary: [],
 		encrypted_content: "secret-thoughts",
 	};
-	replies = [{ items: [reasoning, call("echo", {})] }, say("ok")];
-	await drain(runTurn([], "go", { tools: [echo] }));
+	replies = [{ items: [reasoning, call("echo", { x: null })] }, say("ok")];
+	await drain(runTurn([], "go", tools(echo)));
 	expect(bodies[1].input).toContainEqual(reasoning as ResponseInputItem);
 });

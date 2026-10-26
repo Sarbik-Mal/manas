@@ -1,0 +1,156 @@
+import type { Static, TSchema } from "typebox";
+import Value from "typebox/value";
+import type { ToolSpec } from "../provider/openai";
+
+// What every tool gets. Grows as parts are built: session, ask, vault,
+// backups, scratch, emit (architecture.md 0b, rule 2).
+export type ToolCtx = { signal: AbortSignal };
+
+export type Tool<S extends TSchema = TSchema> = {
+	name: string;
+	description: string;
+	schema: S;
+	// Not in the `tools` list sent to OpenAI; reached through call_tool (4.3).
+	deferred: boolean;
+	readOnly: boolean;
+	run(input: Static<S>, ctx: ToolCtx): Promise<string>;
+};
+
+export type Registry = { tools: Map<string, Tool>; specs: ToolSpec[] };
+export type ToolResult = { status: "ok" | "error"; output: string };
+
+// Only types `run`'s input from the schema.
+export const defineTool = <S extends TSchema>(tool: Tool<S>) => tool;
+
+// Built once per session, so the `tools` list (and the prompt cache) never
+// changes. Throws on a schema OpenAI strict mode would reject.
+export function buildRegistry(list: Tool[]): Registry {
+	const tools = new Map<string, Tool>();
+	for (const tool of list) {
+		if (tools.has(tool.name))
+			throw new Error(`tool "${tool.name}" is defined twice`);
+		const problems = strictProblems(tool.schema as Schema, "");
+		if (problems.length > 0) {
+			throw new Error(`tool "${tool.name}": ${problems.join("; ")}`);
+		}
+		tools.set(tool.name, tool);
+	}
+	const specs = list
+		.filter((t) => !t.deferred)
+		.map(({ name, description, schema }) => ({
+			name,
+			description,
+			// A plain JSON copy: only standard JSON Schema keys reach OpenAI.
+			parameters: JSON.parse(JSON.stringify(schema)),
+		}));
+	return { tools, specs };
+}
+
+// The steps every call goes through (tools.md). Permission (1.7), backup (M2)
+// and check (M3) join here when they're built.
+export async function callTool(
+	registry: Registry,
+	name: string,
+	args: string,
+	ctx: ToolCtx,
+): Promise<ToolResult> {
+	// 1. Check input.
+	const tool = registry.tools.get(name);
+	if (!tool || tool.deferred) return error(`unknown tool "${name}"`);
+	let input: unknown;
+	try {
+		input = JSON.parse(args);
+	} catch {
+		return error("arguments are not valid JSON");
+	}
+	const errors = Value.Errors(tool.schema, input);
+	if (errors.length > 0) {
+		return error(`invalid input for ${name}: ${describe(errors).join("; ")}`);
+	}
+	// 4. Run.
+	let output: string;
+	try {
+		output = await tool.run(input, ctx);
+	} catch (err) {
+		return error((err as Error).message);
+	}
+	// 6. Return.
+	return { status: "ok", output };
+}
+
+const error = (message: string): ToolResult => ({
+	status: "error",
+	output: `error: ${message}`,
+});
+
+type Schema = {
+	type?: string;
+	properties?: Record<string, Schema>;
+	required?: string[];
+	additionalProperties?: unknown;
+	items?: Schema;
+	anyOf?: Schema[];
+};
+
+// OpenAI strict mode: every object lists all its properties as required and
+// allows no others. Optional fields are written as nullable instead.
+function strictProblems(s: Schema, path: string): string[] {
+	const at = path || "/";
+	const out: string[] = [];
+	if (path === "" && s.type !== "object") out.push("/: must be an object");
+	if (s.type === "object" || s.properties) {
+		if (s.additionalProperties !== false) {
+			out.push(`${at}: additionalProperties must be false`);
+		}
+		const keys = Object.keys(s.properties ?? {});
+		const missing = keys.filter((k) => !s.required?.includes(k));
+		if (missing.length > 0) {
+			out.push(
+				`${at}: not required: ${missing.join(", ")} (use a nullable type)`,
+			);
+		}
+		for (const k of keys)
+			out.push(...strictProblems(s.properties?.[k] ?? {}, `${path}/${k}`));
+	}
+	if (s.items) out.push(...strictProblems(s.items, `${path}/items`));
+	for (const [i, branch] of (s.anyOf ?? []).entries()) {
+		out.push(...strictProblems(branch, `${path}/anyOf/${i}`));
+	}
+	return out;
+}
+
+type ValueError = ReturnType<typeof Value.Errors>[number];
+
+// TypeBox reports each anyOf branch separately; fold them into one line per
+// field, e.g. "/limit: must be integer or null".
+function describe(errors: ValueError[]): string[] {
+	const anyOfs = errors.filter((e) => e.keyword === "anyOf");
+	const inBranch = (e: ValueError, a: ValueError) =>
+		e.schemaPath.startsWith(`${a.schemaPath}/anyOf/`);
+	const out: string[] = [];
+	for (const e of errors) {
+		// Repeats "must not have additional properties".
+		if (e.keyword === "boolean") continue;
+		// A branch's own mismatch; its anyOf sums it up.
+		if (anyOfs.some((a) => inBranch(e, a) && e.instancePath === a.instancePath))
+			continue;
+		let message = e.message;
+		if (e.keyword === "anyOf") {
+			// A branch with deeper errors had the right type; those errors say what's wrong.
+			if (
+				errors.some((x) => inBranch(x, e) && x.instancePath !== e.instancePath)
+			)
+				continue;
+			const types = errors
+				.filter((x) => inBranch(x, e) && x.keyword === "type")
+				.map((x) => (x.params as { type: string }).type);
+			if (types.length > 0) message = `must be ${types.join(" or ")}`;
+		} else if (e.keyword === "additionalProperties") {
+			const extra = (e.params as { additionalProperties: string[] })
+				.additionalProperties;
+			message = `${message}: ${extra.join(", ")}`;
+		}
+		out.push(`${e.instancePath || "/"}: ${message}`);
+	}
+	return out;
+}
