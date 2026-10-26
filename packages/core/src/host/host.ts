@@ -307,6 +307,11 @@ export function createHost(
 		);
 		// The vault sits beside the session: sessions/<id>/vault.bin. Like the
 		// session file, it's only written once the session has a message.
+		// Fixed for the session and saved with it, like Claude Code's output
+		// style: a settings change applies to new sessions.
+		const verbosity = loaded
+			? loaded.start.verbosity
+			: (settings.current.settings.verbosity ?? "low");
 		const vaultFile = join(
 			dirname(file),
 			basename(file, ".jsonl"),
@@ -320,6 +325,7 @@ export function createHost(
 			() => ({
 				model: s.model,
 				effort: s.effort ?? null,
+				verbosity,
 				cwd,
 				version,
 				created: new Date().toISOString(),
@@ -341,6 +347,7 @@ export function createHost(
 			vault: v,
 			ready,
 			context: () => firstMessage(cwd),
+			verbosity,
 			toolCtx: {
 				cwd,
 				denied: (path) => deniedPath(path, settings.current.rules, cwd),

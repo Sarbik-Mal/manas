@@ -3,7 +3,7 @@ import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import Type from "typebox";
 import type { Loaded } from "../config/settings";
-import { projectDir } from "../session/store";
+import { findSession, projectDir } from "../session/store";
 import {
 	call,
 	fakeOpenAI,
@@ -735,4 +735,53 @@ test("a session's first message is saved, and a resume sends the same bytes", as
 	await b.waitFor(() => b.events("turn/finished").length === 1);
 	expect(fake.bodies[1].input[0]).toEqual(first);
 	expect(fake.bodies[1].instructions).toBe(fake.bodies[0].instructions);
+});
+
+test("verbosity: low by default or from settings, saved, and kept on resume", async () => {
+	const root = tempRoot();
+	const live = fakeSettings({});
+	const a = connect(root, { settings: live });
+	fake.replies.push(say("one"));
+	const { result } = await a.ready();
+	a.send("session/prompt", { text: "hi" });
+	await a.waitFor(() => a.events("turn/finished").length === 1);
+	expect(fake.bodies[0].text).toEqual({ verbosity: "low" });
+
+	// A settings change applies to new sessions; a resumed one keeps its own.
+	live.reload({ settings: { verbosity: "high" } });
+	const b = connect(root, { settings: live });
+	b.send("initialize", {
+		client: { name: "t", version: "0" },
+		capabilities: [],
+	});
+	b.send("session/resume", { session_id: result.session_id, cwd: "E:\\x" });
+	await b.waitFor(() => b.states().length > 0);
+	fake.replies.push(say("two"), say("three"));
+	b.send("session/prompt", { text: "again" });
+	await b.waitFor(() => b.events("turn/finished").length === 1);
+	expect(fake.bodies[1].text).toEqual({ verbosity: "low" });
+
+	const c = connect(root, { settings: live });
+	await c.ready();
+	c.send("session/prompt", { text: "new" });
+	await c.waitFor(() => c.events("turn/finished").length === 1);
+	expect(fake.bodies[2].text).toEqual({ verbosity: "high" });
+
+	// A session from before 1.10 has none saved: nothing is sent, as then.
+	const file = findSession(result.session_id, "E:\\x", root) as string;
+	writeFileSync(
+		file,
+		readFileSync(file, "utf8").replace(',"verbosity":"low"', ""),
+	);
+	const d = connect(root, { settings: live });
+	d.send("initialize", {
+		client: { name: "t", version: "0" },
+		capabilities: [],
+	});
+	d.send("session/resume", { session_id: result.session_id, cwd: "E:\\x" });
+	await d.waitFor(() => d.states().length > 0);
+	fake.replies.push(say("four"));
+	d.send("session/prompt", { text: "old" });
+	await d.waitFor(() => d.events("turn/finished").length === 1);
+	expect(fake.bodies[3]).not.toHaveProperty("text");
 });

@@ -10,7 +10,7 @@ import type { ReasoningEffort } from "openai/resources/shared";
 import { debugLog } from "../log/debug";
 import { envValues } from "../safety/env-preload";
 import { installId } from "../storage/install-id";
-import { checkEffort } from "./models";
+import { capability, checkEffort } from "./models";
 
 // The SDK already retries 408/409/429/5xx and connection errors, honoring
 // retry-after(-ms), else exponential backoff with jitter.
@@ -75,9 +75,12 @@ export async function* streamResponse(
 		effort,
 		tools = [],
 		instructions,
+		verbosity,
 		signal,
 	}: {
 		model?: string;
+		// Answer length; dropped for a model that can't take it.
+		verbosity?: string;
 		// The system prompt; the same for every request so it stays cached.
 		instructions?: string;
 		effort?: string;
@@ -120,6 +123,10 @@ export async function* streamResponse(
 							: undefined,
 					// store: false, so we carry reasoning across rounds ourselves.
 					include: reasoning ? ["reasoning.encrypted_content"] : undefined,
+					text:
+						verbosity && capability(model).verbosity
+							? { verbosity: verbosity as "low" | "medium" | "high" }
+							: undefined,
 					tools:
 						tools.length > 0
 							? tools.map((t) => ({ type: "function", strict: true, ...t }))

@@ -51,6 +51,7 @@ export function createSession({
 	toolCtx,
 	context,
 	today = localToday,
+	verbosity,
 }: {
 	registry: Registry;
 	model: string;
@@ -72,6 +73,8 @@ export function createSession({
 	context?: () => string;
 	// Today's date, as YYYY-MM-DD; tests move the clock.
 	today?: () => string;
+	// Answer length, fixed for the session so the cache never breaks.
+	verbosity?: string;
 	emit: (e: SessionEvent) => void;
 	// Called whenever a turn is stopped, so pending requests can be withdrawn.
 	onInterrupt?: () => void;
@@ -133,6 +136,7 @@ export function createSession({
 				registry,
 				model,
 				effort,
+				verbosity,
 				signal: ac.signal,
 				inject: takeNext,
 				permit,

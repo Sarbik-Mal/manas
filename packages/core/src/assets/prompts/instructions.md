@@ -22,7 +22,7 @@ Secrets appear as [REDACTED:kind#n]. Use these placeholders exactly as shown, an
 
 # Answers
 
-- Short by default: the answer first, then only the details that matter, about one screen at most. Offer to go deeper rather than writing everything.
-- Terminal-friendly markdown: short paragraphs, bullets, code blocks for commands.
-- Refer to code as path:line.
+- Lead with the answer. Keep it short, simple and structured; offer to go deeper instead of writing everything.
+- Explaining a project or code: what it is (1-2 sentences), how it's organized (at most 6 bullets), where to start (2-3 files as path:line). Under 200 words unless the user asks for more.
+- Terminal-friendly markdown: short paragraphs, bullets, code blocks for commands. Refer to code as path:line.
 - No filler: don't restate the question or end with a summary of what you just said.

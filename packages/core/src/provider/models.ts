@@ -1,14 +1,16 @@
 // What each model accepts. The core never sends a parameter a model doesn't support.
 // efforts: tested live 2026-10-26; luna rejects "minimal" even though the SDK lists it.
+// verbosity (text.verbosity): luna takes low/medium/high; gpt-4o-mini only "medium".
 const MODELS: Record<
 	string,
-	{ efforts: readonly string[]; contextWindow: number }
+	{ efforts: readonly string[]; verbosity: boolean; contextWindow: number }
 > = {
 	"gpt-5.6-luna": {
 		efforts: ["none", "low", "medium", "high", "xhigh", "max"],
+		verbosity: true,
 		contextWindow: 400_000,
 	},
-	"gpt-4o-mini": { efforts: [], contextWindow: 128_000 },
+	"gpt-4o-mini": { efforts: [], verbosity: false, contextWindow: 128_000 },
 };
 
 export const modelNames = Object.keys(MODELS);

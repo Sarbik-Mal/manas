@@ -21,6 +21,8 @@ export const DEFAULT_ROOT = join(homedir(), ".manas", "projects");
 export type Start = {
 	model: string;
 	effort: string | null;
+	// Missing in sessions from before 1.10: nothing was sent.
+	verbosity?: string;
 	cwd: string;
 	version: string;
 	created: string;

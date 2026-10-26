@@ -98,6 +98,15 @@ test("effort and include are dropped for a model without reasoning", async () =>
 	expect(lastBody).not.toHaveProperty("include");
 });
 
+test("verbosity goes to a model that takes it, and is dropped otherwise", async () => {
+	await collect({ verbosity: "low" });
+	expect(lastBody?.text).toEqual({ verbosity: "low" });
+	await collect({ model: "gpt-4o-mini", verbosity: "low" });
+	expect(lastBody).not.toHaveProperty("text");
+	await collect();
+	expect(lastBody).not.toHaveProperty("text");
+});
+
 test("unsupported effort and unknown model fail before any request", async () => {
 	await expect(collect({ effort: "minimal" })).rejects.toThrow(
 		'effort "minimal" not supported',

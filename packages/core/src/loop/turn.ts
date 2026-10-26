@@ -54,6 +54,7 @@ export async function* runTurn(
 	}: {
 		model?: string;
 		effort?: string;
+		verbosity?: string;
 		registry?: Registry;
 		signal?: AbortSignal;
 		inject?: () => string[];

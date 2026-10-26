@@ -109,11 +109,15 @@ test("fatal: anything that could change what's allowed", () => {
 
 test("warnings: other mistakes drop just that key", () => {
 	const { load } = setup(
-		'{ "effort": 5, "mode": "yolo", "colour": "red", "limits": { "cleanupPeriodDays": 0 }, "models": { "main": "gpt-4o-mini" } }',
+		'{ "effort": 5, "mode": "yolo", "colour": "red", "limits": { "cleanupPeriodDays": 0 }, "models": { "main": "gpt-4o-mini" }, "verbosity": "tiny" }',
 	);
 	const { settings, warnings } = load();
 	expect(settings).toEqual({ models: { main: "gpt-4o-mini" } });
-	expect(warnings).toHaveLength(4);
+	expect(warnings).toHaveLength(5);
+	expect(warnings.join("\n")).toContain("verbosity:");
+	expect(setup('{ "verbosity": "high" }').load().settings).toEqual({
+		verbosity: "high",
+	});
 	expect(warnings.join("\n")).toContain("effort: must be string (ignored)");
 	expect(warnings.join("\n")).toContain('unknown key "colour" (ignored)');
 	expect(warnings.join("\n")).toContain(

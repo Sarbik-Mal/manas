@@ -83,6 +83,12 @@ const KEYS = {
 		closed,
 	),
 	effort: Type.String(),
+	// How long answers are (OpenAI's text.verbosity); new sessions only.
+	verbosity: Type.Union([
+		Type.Literal("low"),
+		Type.Literal("medium"),
+		Type.Literal("high"),
+	]),
 	permissions: Type.Object(
 		{
 			allow: Type.Optional(Strings),
