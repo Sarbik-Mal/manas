@@ -1,12 +1,15 @@
 import {
 	appendFileSync,
+	mkdirSync,
 	readFileSync,
 	type Stats,
 	unwatchFile,
 	watchFile,
+	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { applyEdits, modify } from "jsonc-parser";
 import Type, { type Static, type TSchema } from "typebox";
 import Value from "typebox/value";
 
@@ -253,6 +256,42 @@ function checkRules(where: string, p: Settings["permissions"] = {}) {
 			}
 		}
 	}
+}
+
+// "Yes, and don't ask again": adds an allow rule to a settings file, keeping
+// its comments and layout. The file and its folder are made if missing.
+// Throws if the file doesn't parse (the rule is then kept for the session).
+export function saveRule(file: string, rule: string) {
+	let text = "";
+	try {
+		text = readFileSync(file, "utf8");
+	} catch {}
+	const parsed = (text: string) => {
+		try {
+			return Bun.JSONC.parse(text || "{}") as Settings;
+		} catch {
+			throw new SettingsError(`settings ${file} doesn't parse`);
+		}
+	};
+	const allow = parsed(text).permissions?.allow;
+	if (Array.isArray(allow) && allow.includes(rule)) return;
+	const base = text.trim() ? text : "{}\n";
+	const tabs = !/\n {2}\S/.test(base);
+	const next = applyEdits(
+		base,
+		modify(base, ["permissions", "allow", -1], rule, {
+			isArrayInsertion: true,
+			formattingOptions: {
+				insertSpaces: !tabs,
+				tabSize: tabs ? 1 : 2,
+				eol: base.includes("\r\n") ? "\r\n" : "\n",
+			},
+		}),
+	);
+	if (!parsed(next).permissions?.allow?.includes(rule))
+		throw new SettingsError(`settings ${file}: the rule didn't save`);
+	mkdirSync(dirname(file), { recursive: true });
+	writeFileSync(file, next);
 }
 
 const LISTS = new Set([

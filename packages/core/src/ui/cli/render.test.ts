@@ -56,8 +56,11 @@ test("the old console gets ASCII", () => {
 	expect(r.toolFinished("ok", "done", ascii)).toBe("  > ok - done");
 	expect(r.interrupted(ascii)).toBe("  > Interrupted");
 	expect(
-		r.header({ version: "1", model: "m", effort: null, cwd: "C:\\p" }, ascii),
-	).toBe("manas 1 - m - C:\\p - Esc interrupts, /help");
+		r.header(
+			{ version: "1", model: "m", effort: null, mode: "manual", cwd: "C:\\p" },
+			ascii,
+		),
+	).toBe("manas 1 - m - vibe-check - C:\\p - Esc interrupts, /help");
 	expect(r.detectStyle({})).toEqual({ unicode: false, color: true });
 	expect(r.detectStyle({ TERM_PROGRAM: "vscode", NO_COLOR: "1" })).toEqual({
 		unicode: true,
@@ -72,8 +75,17 @@ test("colors: dim tool rows, red errors, yellow warnings", () => {
 	expect(r.notice("error", "x", c)).toBe("\x1b[31mx\x1b[0m");
 	expect(r.notice("warn", "x", c)).toBe("\x1b[33mx\x1b[0m");
 	expect(
-		r.header({ version: "1", model: "m", effort: "high", cwd: "p" }, uni),
-	).toBe("manas 1 · m (high) · p · Esc interrupts, /help");
+		r.header(
+			{
+				version: "1",
+				model: "m",
+				effort: "high",
+				mode: "acceptEdits",
+				cwd: "p",
+			},
+			uni,
+		),
+	).toBe("manas 1 · m (high) · lowkey · p · Esc interrupts, /help");
 });
 
 test("commands", () => {
@@ -113,4 +125,24 @@ test("rewind rows: a prompt, or the undo / redo of the last code rewind", () => 
 	expect(
 		r.rewindRow(1, { ...point, undo: { ...undo, kind: "redo" } }, now, ascii),
 	).toBe('1. Redo rewind to "fix it" - a.ts, b.ts - 2 min ago');
+});
+
+test("modes: the prompt marker, the switch line, option 2's wording", () => {
+	expect(r.promptText("acceptEdits")).toBe("lowkey > ");
+	expect(r.promptText("manual")).toBe("> ");
+	expect(r.modeSwitched("acceptEdits", uni)).toBe(
+		"lowkey on: edits in this project run without asking (Shift+Tab to change)",
+	);
+	expect(r.rememberLabel({ mode: "acceptEdits" })).toBe(
+		"Yes, and switch to lowkey for this session",
+	);
+	expect(
+		r.rememberLabel({
+			rules: ["PowerShell(npm test *)"],
+			destination: "project",
+		}),
+	).toBe("Yes, and don't ask again for PowerShell(npm test *) in this project");
+	expect(
+		r.rememberLabel({ rules: ["Edit(//d/x/**)"], destination: "session" }),
+	).toBe("Yes, and allow Edit(//d/x/**) for this session");
 });

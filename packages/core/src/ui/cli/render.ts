@@ -101,15 +101,50 @@ export function notice(level: string, text: string, st: Style) {
 }
 
 export function header(
-	h: { version: string; model: string; effort: string | null; cwd: string },
+	h: {
+		version: string;
+		model: string;
+		effort: string | null;
+		mode: string;
+		cwd: string;
+	},
 	st: Style,
 ) {
 	const d = ` ${sym(st).dot} `;
 	const model = h.effort ? `${h.model} (${h.effort})` : h.model;
 	return dim(
-		`manas ${h.version}${d}${model}${d}${h.cwd}${d}Esc interrupts, /help`,
+		`manas ${h.version}${d}${model}${d}${modeName(h.mode)}${d}${h.cwd}${d}Esc interrupts, /help`,
 		st,
 	);
+}
+
+// --- Modes ---
+
+export const modeName = (mode: string) =>
+	mode === "acceptEdits" ? "lowkey" : "vibe-check";
+// The input prompt: `lowkey > ` in lowkey, plain in vibe-check.
+export const promptText = (mode: string) =>
+	mode === "acceptEdits" ? "lowkey > " : "> ";
+export const modeSwitched = (mode: string, st: Style) =>
+	dim(
+		mode === "acceptEdits"
+			? "lowkey on: edits in this project run without asking (Shift+Tab to change)"
+			: "vibe-check on: asks before edits (Shift+Tab to change)",
+		st,
+	);
+
+export type Suggestion =
+	| { rules: string[]; destination: string }
+	| { mode: string };
+// Option 2 of an approval, worded like Claude Code's.
+export function rememberLabel(s: Suggestion) {
+	if ("mode" in s) return "Yes, and switch to lowkey for this session";
+	const what = s.rules.join(", ");
+	if (s.destination === "project")
+		return `Yes, and don't ask again for ${what} in this project`;
+	if (s.destination === "user")
+		return `Yes, and don't ask again for ${what} in any project`;
+	return `Yes, and allow ${what} for this session`;
 }
 
 export type Listed = {

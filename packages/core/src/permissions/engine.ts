@@ -1,5 +1,13 @@
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { relative, resolve } from "node:path";
+import {
+	basename,
+	dirname,
+	isAbsolute,
+	join,
+	relative,
+	resolve,
+} from "node:path";
 import { parseRule, type Rule, type Rules, toolKey } from "../config/settings";
 import { type ParseResult, parsePowerShell } from "./powershell";
 
@@ -17,16 +25,69 @@ export type Checked = {
 		path?: (input: unknown) => string;
 	};
 };
+// What "Yes, and don't ask again" would do: add rules to a settings file
+// (or this session), or switch to lowkey.
+export type Destination = "session" | "project" | "user";
+export type Suggestion =
+	| { rules: string[]; destination: Destination }
+	| { mode: "acceptEdits" };
 export type Decision =
 	| { behavior: "allow"; reason: string }
 	| { behavior: "deny"; reason: string; rule: string }
-	| { behavior: "ask"; reason: string; suggestions: string[] };
+	| { behavior: "ask"; reason: string; suggestions: Suggestion[] };
 export type Context = {
 	rules: Rules;
 	session: Rule[]; // "don't ask again this session"
 	cwd: string;
 	home?: string;
+	mode?: Mode;
 };
+
+// --- Modes (architecture.md §8) ---
+
+export type Mode = "manual" | "acceptEdits";
+export const MODE_NAMES: Record<Mode, string> = {
+	manual: "vibe-check",
+	acceptEdits: "lowkey",
+};
+const ALIASES: Record<string, string> = {
+	"vibe-check": "manual",
+	lowkey: "acceptEdits",
+	scheming: "plan",
+	"let-it-cook": "auto",
+	ghost: "dontAsk",
+};
+const LATER: Record<string, string> = {
+	plan: "scheming (plan) comes in 6.4",
+	auto: "let-it-cook (auto) comes in 8.5",
+	dontAsk: "ghost (dontAsk) comes in 8.7",
+};
+
+// A plain or display name, any case. Throws for unknown modes and the ones
+// not built yet.
+export function parseMode(name: string): Mode {
+	const lower = name.toLowerCase();
+	const plain =
+		ALIASES[lower] ??
+		[...Object.keys(MODE_NAMES), ...Object.keys(LATER)].find(
+			(m) => m.toLowerCase() === lower,
+		);
+	if (plain === "manual" || plain === "acceptEdits") return plain;
+	const ok = "vibe-check (manual) or lowkey (acceptEdits)";
+	if (plain && LATER[plain]) throw new Error(`${LATER[plain]}; for now: ${ok}`);
+	throw new Error(`unknown mode "${name}": ${ok}`);
+}
+
+// Still ask in lowkey, at any depth (Claude Code's list, .manas for .claude).
+const PROTECTED = new Set([
+	".git",
+	".vscode",
+	".idea",
+	".husky",
+	".manas",
+	".npmrc",
+	".mcp.json",
+]);
 
 type Part = ParseResult["commands"][number];
 
@@ -51,6 +112,11 @@ export async function decide(
 	const target = tool.permission?.path?.(input);
 	const path =
 		target === undefined ? undefined : posix(resolve(ctx.cwd, target));
+	// An edit lowkey may run: in the project (after links), not protected.
+	const editable =
+		target !== undefined &&
+		covers("edit", tool.name) &&
+		inProject(resolve(ctx.cwd, target), ctx.cwd);
 
 	// Does `rule` cover this call? For a command: any part (deny, ask) or one
 	// given part (allow).
@@ -84,6 +150,11 @@ export async function decide(
 			};
 		}
 	}
+	// ponytail: lowkey covers edit and write only; Claude Code also lets
+	// mkdir/mv/cp/rm and Set-Content in the project through. Add with 3.1,
+	// when PowerShell can change things.
+	if (ctx.mode === "acceptEdits" && editable)
+		return { behavior: "allow", reason: "lowkey: an edit in the project" };
 	const allows = [...ctx.rules.allow, ...ctx.session];
 	const bare = allows.find((rule) => {
 		const r = parseRule(rule.text);
@@ -104,19 +175,53 @@ export async function decide(
 		return {
 			behavior: "ask",
 			reason: "this command can change things",
-			suggestions: [...new Set(open.map(suggestCommand))].slice(0, 5),
+			suggestions: [
+				{
+					rules: [...new Set(open.map(suggestCommand))].slice(0, 5),
+					destination: "project",
+				},
+			],
 		};
 	}
 	if (allows.some((rule) => hits(rule)))
 		return { behavior: "allow", reason: "allowed by your settings" };
 	if (tool.readOnly) return { behavior: "allow", reason: "read-only" };
+	// As in Claude Code: an edit in the project offers lowkey; anything else
+	// a rule for this session (file approvals aren't saved).
 	return {
 		behavior: "ask",
 		reason: `${tool.name} can change things`,
 		suggestions: [
-			path ? suggestPath(tool.name, path, ctx.cwd) : ruleName(tool.name),
+			editable
+				? { mode: "acceptEdits" }
+				: {
+						rules: [
+							path
+								? suggestPath(tool.name, path, ctx.cwd)
+								: ruleName(tool.name),
+						],
+						destination: "session",
+					},
 		],
 	};
+}
+
+// Inside `cwd` once links are followed (a junction out doesn't count), and
+// not under a protected name.
+function inProject(abs: string, cwd: string) {
+	const rel = relative(real(cwd), real(abs));
+	if (!rel || rel.startsWith("..") || isAbsolute(rel)) return false;
+	return !rel.split(/[\\/]/).some((part) => PROTECTED.has(part.toLowerCase()));
+}
+
+// The real path of the nearest folder that exists, plus the rest.
+function real(p: string): string {
+	try {
+		return realpathSync.native(p);
+	} catch {
+		const up = dirname(p);
+		return up === p ? p : join(real(up), basename(p));
+	}
 }
 
 // The bare deny rule covering a whole tool, if any (it's left out of the
@@ -323,7 +428,8 @@ function suggestPath(toolName: string, path: string, cwd: string) {
 			: rel
 				? `${rel}/**`
 				: "**";
-	return `${ruleName(toolName)}(${spec})`;
+	// Edit(...) covers write too, as in Claude Code.
+	return `${covers("edit", toolName) ? "Edit" : ruleName(toolName)}(${spec})`;
 }
 
 const ruleName = (name: string) =>

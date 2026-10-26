@@ -21,6 +21,7 @@ type Response = {
 
 const ESC = "\x1b";
 const CTRL_C = "\x03";
+const SHIFT_TAB = "\x1b[Z";
 const QUIT_WINDOW_MS = 2000;
 const DOUBLE_ESC_MS = 600;
 
@@ -36,6 +37,7 @@ export async function runCli({
 	root,
 	resume,
 	tools,
+	mode: startMode,
 }: {
 	input: In;
 	output: NodeJS.WritableStream;
@@ -50,6 +52,8 @@ export async function runCli({
 	resume?: { id: string } | "latest" | "pick";
 	// The core's tools (`coreTools()`); tests bring their own.
 	tools?: Tool[];
+	// --mode: the starting mode (plain or display name).
+	mode?: string;
 }): Promise<number> {
 	const write = (s: string) => output.write(s);
 	let atLineStart = true;
@@ -70,6 +74,9 @@ export async function runCli({
 	// /clear keeps the current ones.
 	let model = "";
 	let effort: string | null = null;
+	let mode = "";
+	// Redraws the input's prompt when the mode changes while typing.
+	let redraw: (() => void) | undefined;
 
 	const onLine = (line: string) => {
 		const m = JSON.parse(line) as Msg;
@@ -115,12 +122,19 @@ export async function runCli({
 		const ready = new Promise<void>((resolve) => {
 			onIdle = resolve;
 		});
+		// --mode wins at launch; later, /clear and /resume keep the current
+		// mode (as Claude Code's /resume does).
 		const res = id
-			? await request("session/resume", { session_id: id, cwd })
+			? await request("session/resume", {
+					session_id: id,
+					cwd,
+					mode: mode || startMode || null,
+				})
 			: await request("session/new", {
 					cwd,
 					model: model || null,
 					effort: model ? effort : null,
+					mode: mode || startMode || null,
 				});
 		if (res.ok) await ready;
 		onIdle = undefined;
@@ -139,6 +153,7 @@ export async function runCli({
 			case "session/started":
 				model = e.model as string;
 				effort = (e.effort as string | null) ?? null;
+				mode = e.mode as string;
 				return;
 			case "prompt/delivered":
 				// Live prompts are already on screen as typed; replayed ones aren't.
@@ -173,6 +188,11 @@ export async function runCli({
 			case "notice":
 				return say(r.notice(e.level as string, e.text as string, style));
 			case "state/changed":
+				if (e.mode !== mode) {
+					mode = e.mode as string;
+					say(r.modeSwitched(mode, style));
+					redraw?.();
+				}
 				if (e.state === "idle") onIdle?.();
 				return;
 		}
@@ -208,7 +228,8 @@ export async function runCli({
 			const parts: string[] = [];
 			let done = false;
 			let lastEsc = 0;
-			const onPress = (_: string, key?: { name?: string }) => {
+			const onPress = (_: string, key?: { name?: string; shift?: boolean }) => {
+				if (key?.name === "tab" && key.shift) return cycleMode();
 				if (key?.name !== "escape" || rl.line || parts.length > 0) return;
 				const now = Date.now();
 				if (now - lastEsc < DOUBLE_ESC_MS) {
@@ -218,8 +239,13 @@ export async function runCli({
 				lastEsc = now;
 			};
 			input.on("keypress", onPress);
+			redraw = () => {
+				if (parts.length === 0) rl.setPrompt(r.promptText(mode));
+				rl.prompt(true);
+			};
 			const finish = (value: string | null) => {
 				done = true;
+				redraw = undefined;
 				input.off("keypress", onPress);
 				history = (rl as unknown as { history: string[] }).history;
 				rl.close();
@@ -239,7 +265,7 @@ export async function runCli({
 				if (rl.line || parts.length > 0) {
 					parts.length = 0;
 					write("\n");
-					rl.setPrompt("> ");
+					rl.setPrompt(r.promptText(mode));
 					rl.write(null, { ctrl: true, name: "u" });
 					rl.prompt();
 				} else if (secondCtrlC()) {
@@ -254,12 +280,13 @@ export async function runCli({
 			rl.on("close", () => {
 				if (!done) {
 					done = true;
+					redraw = undefined;
 					input.off("keypress", onPress);
 					write("\n");
 					resolve(null);
 				}
 			});
-			rl.setPrompt("> ");
+			rl.setPrompt(r.promptText(mode));
 			rl.prompt();
 			if (prefill) rl.write(prefill);
 		});
@@ -281,6 +308,7 @@ export async function runCli({
 		const onKey = (chunk: Buffer | string) => {
 			if (asking) return;
 			const key = chunk.toString();
+			if (key === SHIFT_TAB) return cycleMode();
 			if (key === CTRL_C && secondCtrlC()) quitting = true;
 			if (key === ESC || key === CTRL_C) void request("session/interrupt");
 		};
@@ -338,14 +366,11 @@ export async function runCli({
 		const id = m.id as string;
 		if (cancelled.has(id)) return;
 		asking = id;
-		const suggestions = m.suggestions as string[];
+		// The core offers at most one "don't ask again" choice per prompt.
+		const remember = (m.suggestions as r.Suggestion[])[0];
 		const options = [
 			"Yes",
-			...(suggestions.length > 0
-				? [
-						`Yes, and don't ask again this session for ${suggestions.join(", ")}`,
-					]
-				: []),
+			...(remember ? [r.rememberLabel(remember)] : []),
 			"No",
 		];
 		say(r.yellow(`Manas wants to ${m.title}`, style));
@@ -368,7 +393,14 @@ export async function runCli({
 		}
 		asking = undefined;
 		if (!cancelled.has(id))
-			reply(id, { ok: true, result: { decision, message } });
+			reply(id, {
+				ok: true,
+				result: {
+					decision,
+					suggestion: decision === "allow_always" ? remember : null,
+					message,
+				},
+			});
 	}
 	// The 20 newest sessions in this folder; undefined if none was picked.
 	const pick = async () => {
@@ -446,6 +478,14 @@ export async function runCli({
 			`${name}: ${current} ${r.dim(`(choices: ${choices.join(", ")})`, style)}`,
 		);
 
+	// Shift+Tab: vibe-check and lowkey (scheming and let-it-cook join later).
+	// Applies from the next tool call.
+	const cycleMode = () => {
+		void request("session/set_mode", {
+			mode: mode === "acceptEdits" ? "manual" : "acceptEdits",
+		});
+	};
+
 	const setValue = async (type: string, data: Msg) => {
 		const res = await request(type, data);
 		if (!res.ok) return say(r.red(res.error?.message ?? "error", style));
@@ -474,7 +514,7 @@ export async function runCli({
 		host.close();
 		return 1;
 	}
-	say(r.header({ version, model, effort, cwd }, style));
+	say(r.header({ version, model, effort, mode, cwd }, style));
 	if (firstPrompt) {
 		say(`> ${firstPrompt}`);
 		await runPrompt(firstPrompt);
@@ -517,7 +557,7 @@ export async function runCli({
 					await start();
 				}
 				history = [];
-				say(r.header({ version, model, effort, cwd }, style));
+				say(r.header({ version, model, effort, mode, cwd }, style));
 				break;
 			}
 			case "rewind":
@@ -544,6 +584,12 @@ export async function runCli({
 				else showChoice("Effort", effort ?? "default", [...efforts, "default"]);
 				break;
 			}
+			case "mode":
+				if (cmd.arg) {
+					const res = await request("session/set_mode", { mode: cmd.arg });
+					if (!res.ok) say(r.red(res.error?.message ?? "error", style));
+				} else showChoice("Mode", r.modeName(mode), ["vibe-check", "lowkey"]);
+				break;
 			case "unknown":
 				say(r.yellow(`Unknown command ${cmd.text}. Type /help.`, style));
 				break;

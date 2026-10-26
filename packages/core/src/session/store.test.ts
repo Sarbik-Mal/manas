@@ -52,6 +52,7 @@ test("load: round-trip, latest change wins, damaged lines skipped", () => {
 	store.set({ model: "gpt-4o-mini" });
 	store.set({ effort: "low" });
 	store.set({ model: "gpt-5.6-luna" });
+	store.set({ mode: "acceptEdits" });
 	store.item({ role: "assistant", content: "hello" });
 	const read = {
 		path: "e:\\p\\a.ts",
@@ -72,6 +73,7 @@ test("load: round-trip, latest change wins, damaged lines skipped", () => {
 	expect(loaded).toMatchObject({
 		model: "gpt-5.6-luna",
 		effort: "low",
+		mode: "acceptEdits",
 		skipped: 1,
 	});
 });

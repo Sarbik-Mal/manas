@@ -6,6 +6,7 @@
 	"dependencies": {
 		"@manas/protocol": "workspace:*",
 		"diff": "9.0.0",
+		"jsonc-parser": "3.3.1",
 		"openai": "^7.43.0",
 		"typebox": "^1.4.3"
 	},

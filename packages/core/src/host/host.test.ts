@@ -1,8 +1,14 @@
 import { afterAll, beforeEach, expect, test } from "bun:test";
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
 import Type from "typebox";
-import type { Loaded } from "../config/settings";
+import { type Loaded, projectFile } from "../config/settings";
 import { findSession, projectDir } from "../session/store";
 import {
 	call,
@@ -440,7 +446,9 @@ test("the 1.7 check: Get-ChildItem runs; Remove-Item asks", async () => {
 		input: { command: "Remove-Item x" },
 		title: "run: Remove-Item x",
 		reason: "this command can change things",
-		suggestions: ["PowerShell(Remove-Item *)"],
+		suggestions: [
+			{ rules: ["PowerShell(Remove-Item *)"], destination: "project" },
+		],
 	});
 	expect(c.states().at(-1)).toBe("waiting_for_user");
 	answer(c, asked(c)[0].id, { decision: "allow" });
@@ -451,7 +459,7 @@ test("the 1.7 check: Get-ChildItem runs; Remove-Item asks", async () => {
 	});
 });
 
-test("Yes this session: the same kind of command doesn't ask again", async () => {
+test("Yes for this session: the same kind of command doesn't ask again", async () => {
 	const c = connect(undefined, { tools: [powershell] });
 	await c.ready();
 	fake.replies.push(
@@ -462,7 +470,14 @@ test("Yes this session: the same kind of command doesn't ask again", async () =>
 	);
 	c.send("session/prompt", { text: "1" });
 	await c.waitFor(() => asked(c).length === 1);
-	answer(c, asked(c)[0].id, { decision: "allow_always" });
+	// An editor may pick the destination; "session" saves nothing.
+	answer(c, asked(c)[0].id, {
+		decision: "allow_always",
+		suggestion: {
+			rules: ["PowerShell(Remove-Item *)"],
+			destination: "session",
+		},
+	});
 	await c.waitFor(() => c.events("turn/finished").length === 1);
 	c.send("session/prompt", { text: "2" });
 	await c.waitFor(() => c.events("turn/finished").length === 2);
@@ -905,4 +920,199 @@ test("checkpoints/list, checkpoints/preview and session/rewind; errors for unkno
 	).toEqual(error("busy"));
 	answer(c, asked(c)[1].id, { decision: "deny", message: null });
 	await c.waitFor(() => c.events("turn/finished").length === 2);
+});
+
+// --- 2.7: modes and saved rules ---
+
+test("the 2.7 check: Allow and remember saves a rule to the project file", async () => {
+	const project = tempRoot();
+	const file = projectFile(project);
+	mkdirSync(dirname(file), { recursive: true });
+	writeFileSync(file, '{\n\t// mine\n\t"verbosity": "low"\n}\n');
+	const c = connect(undefined, {
+		tools: [powershell],
+		settings: fakeSettings({ files: [join(tempRoot(), "user.json"), file] }),
+	});
+	await c.ready(project);
+	fake.replies.push(
+		ps("npm test --watch"),
+		say("ok"),
+		ps("npm test"),
+		say("ok"),
+	);
+	c.send("session/prompt", { text: "1" });
+	await c.waitFor(() => asked(c).length === 1);
+	const [suggestion] = asked(c)[0].suggestions as object[];
+	expect(suggestion).toEqual({
+		rules: ["PowerShell(npm test *)"],
+		destination: "project",
+	});
+	answer(c, asked(c)[0].id, { decision: "allow_always", suggestion });
+	await c.waitFor(() => c.events("turn/finished").length === 1);
+	// Comments stay; the rule is in the allow list.
+	const text = readFileSync(file, "utf8");
+	expect(text).toContain("// mine");
+	expect(Bun.JSONC.parse(text)).toEqual({
+		verbosity: "low",
+		permissions: { allow: ["PowerShell(npm test *)"] },
+	});
+	// It applies at once, before the settings file reloads.
+	c.send("session/prompt", { text: "2" });
+	await c.waitFor(() => c.events("turn/finished").length === 2);
+	expect(asked(c)).toHaveLength(1);
+	expect(c.events("notice")).toEqual([]);
+});
+
+test("a project file not in use isn't written; the rule holds for the session", async () => {
+	const project = tempRoot();
+	const c = connect(undefined, { tools: [powershell] });
+	await c.ready(project);
+	fake.replies.push(ps("npm test"), say("ok"), ps("npm test"), say("ok"));
+	c.send("session/prompt", { text: "1" });
+	await c.waitFor(() => asked(c).length === 1);
+	const [suggestion] = asked(c)[0].suggestions as object[];
+	answer(c, asked(c)[0].id, { decision: "allow_always", suggestion });
+	await c.waitFor(() => c.events("turn/finished").length === 1);
+	expect(c.events("notice")[0].text).toStartWith("Couldn't save the rule:");
+	expect(existsSync(projectFile(project))).toBe(false);
+	c.send("session/prompt", { text: "2" });
+	await c.waitFor(() => c.events("turn/finished").length === 2);
+	expect(asked(c)).toHaveLength(1);
+});
+
+test("a choice that wasn't offered saves nothing; the call runs once", async () => {
+	const c = connect(undefined, { tools: [powershell] });
+	await c.ready();
+	fake.replies.push(ps("npm test"), say("ok"), ps("npm test"), say("ok"));
+	c.send("session/prompt", { text: "1" });
+	await c.waitFor(() => asked(c).length === 1);
+	answer(c, asked(c)[0].id, {
+		decision: "allow_always",
+		suggestion: { rules: ["PowerShell"], destination: "session" },
+	});
+	await c.waitFor(() => c.events("turn/finished").length === 1);
+	expect(c.events("tool/finished")[0].status).toBe("ok");
+	expect(c.events("notice")[0].text).toContain("wasn't offered");
+	c.send("session/prompt", { text: "2" });
+	await c.waitFor(() => asked(c).length === 2);
+	answer(c, asked(c)[1].id, { decision: "allow" });
+	await c.waitFor(() => c.events("turn/finished").length === 2);
+});
+
+test("session/set_mode: display names, later modes refused, state/changed carries the mode", async () => {
+	const c = connect();
+	await c.ready();
+	expect(c.events("session/started")[0].mode).toBe("manual");
+	expect(c.send("session/set_mode", { mode: "lowkey" })).toMatchObject({
+		ok: true,
+		result: { mode: "acceptEdits" },
+	});
+	expect(c.events("state/changed").at(-1)).toMatchObject({
+		state: "idle",
+		mode: "acceptEdits",
+	});
+	expect(c.send("session/set_mode", { mode: "plan" })).toEqual(
+		error("invalid_params"),
+	);
+	expect(c.send("session/set_mode", { mode: "nope" })).toEqual(
+		error("invalid_params"),
+	);
+	c.send("session/set_mode", { mode: "acceptEdits" });
+	expect(c.events("notice").at(-1)?.text).toBe("Already in lowkey.");
+
+	const d = connect();
+	d.send("initialize", {
+		client: { name: "t", version: "0" },
+		capabilities: [],
+	});
+	expect(d.send("session/new", { cwd: ".", mode: "scheming" })).toEqual(
+		error("invalid_params"),
+	);
+});
+
+test("the starting mode: the request, then settings; a later mode in settings warns", async () => {
+	const a = connect(undefined, {
+		settings: fakeSettings({ settings: { mode: "lowkey" } as never }),
+	});
+	await a.ready();
+	expect(a.events("session/started")[0].mode).toBe("acceptEdits");
+
+	const b = connect(undefined, {
+		settings: fakeSettings({ settings: { mode: "plan" } as never }),
+	});
+	await b.ready();
+	expect(b.events("session/started")[0].mode).toBe("manual");
+	expect(b.events("notice")[0].text).toBe(
+		"settings: scheming (plan) comes in 6.4; for now: vibe-check (manual) or lowkey (acceptEdits) (starting in vibe-check)",
+	);
+});
+
+test("lowkey: edits in the project run; .git still asks; option 2 switches to it", async () => {
+	const project = tempRoot();
+	const c = connect(undefined, { tools: coreTools() });
+	const write = (file_path: string) => ({
+		items: [call("write", { file_path, content: "x\n" })],
+	});
+	fake.replies.push(
+		write("a.ts"),
+		say("ok"),
+		write("b.ts"),
+		say("ok"),
+		write(".git/hooks/x"),
+		say("ok"),
+	);
+	await c.ready(project);
+	c.send("session/prompt", { text: "a" });
+	await c.waitFor(() => asked(c).length === 1);
+	expect(asked(c)[0].suggestions).toEqual([{ mode: "acceptEdits" }]);
+	answer(c, asked(c)[0].id, {
+		decision: "allow_always",
+		suggestion: { mode: "acceptEdits" },
+	});
+	await c.waitFor(() => c.events("turn/finished").length === 1);
+	expect(c.events("state/changed").at(-1)?.mode).toBe("acceptEdits");
+
+	c.send("session/prompt", { text: "b" });
+	await c.waitFor(() => c.events("turn/finished").length === 2);
+	expect(asked(c)).toHaveLength(1);
+	expect(readFileSync(join(project, "b.ts"), "utf8")).toBe("x\n");
+
+	c.send("session/prompt", { text: "git" });
+	await c.waitFor(() => asked(c).length === 2);
+	expect(asked(c)[1].suggestions).toEqual([
+		{ rules: ["Edit(.git/hooks/**)"], destination: "session" },
+	]);
+	answer(c, asked(c)[1].id, { decision: "deny", message: "leave .git alone" });
+	await c.waitFor(() => c.events("turn/finished").length === 3);
+	expect(existsSync(join(project, ".git"))).toBe(false);
+});
+
+test("the mode is saved with the session and comes back; the request's mode wins", async () => {
+	const root = tempRoot();
+	const project = tempRoot();
+	const a = connect(root);
+	fake.replies.push(say("ok"));
+	await a.ready(project);
+	a.send("session/prompt", { text: "hi" });
+	await a.waitFor(() => a.events("turn/finished").length === 1);
+	a.send("session/set_mode", { mode: "lowkey" });
+	const id = a.events("session/started")[0].session_id as string;
+	a.host.close();
+
+	const resume = (mode?: string) => {
+		const c = connect(root);
+		c.send("initialize", {
+			client: { name: "t", version: "0" },
+			capabilities: [],
+		});
+		c.send("session/resume", { session_id: id, cwd: project, mode });
+		return c;
+	};
+	const b = resume();
+	await b.waitFor(() => b.events("session/started").length > 0);
+	expect(b.events("session/started")[0].mode).toBe("acceptEdits");
+	b.host.close();
+	const c = resume("vibe-check");
+	await c.waitFor(() => c.events("session/started").length > 0);
+	expect(c.events("session/started")[0].mode).toBe("manual");
 });

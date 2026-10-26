@@ -7,6 +7,7 @@ import {
 	loadSettings,
 	projectFile,
 	SettingsError,
+	saveRule,
 	userFile,
 } from "./settings";
 
@@ -180,4 +181,42 @@ test("live: nothing is reported when nothing changed (missing files included)", 
 	await Bun.sleep(200);
 	expect(events).toEqual([]);
 	live.stop();
+});
+
+test("saveRule keeps comments and layout, makes a missing file, skips a repeat", () => {
+	const dir = tempRoot();
+	const file = join(dir, ".manas", "settings.json");
+	saveRule(file, "PowerShell(npm test *)");
+	saveRule(file, "PowerShell(npm test *)");
+	expect(Bun.JSONC.parse(readFileSync(file, "utf8"))).toEqual({
+		permissions: { allow: ["PowerShell(npm test *)"] },
+	});
+
+	const spaced = join(dir, "spaced.json");
+	writeFileSync(
+		spaced,
+		'{\r\n  // why\r\n  "permissions": { "allow": ["Read"], "deny": [] }, // end\r\n}\r\n',
+	);
+	saveRule(spaced, "PowerShell(git push *)");
+	const text = readFileSync(spaced, "utf8");
+	expect(text).toContain("  // why\r\n");
+	expect(text).toContain("// end");
+	expect(text).not.toMatch(/[^\r]\n/);
+	expect(
+		(Bun.JSONC.parse(text) as { permissions: unknown }).permissions,
+	).toEqual({
+		allow: ["Read", "PowerShell(git push *)"],
+		deny: [],
+	});
+	// The rule is read back like any other.
+	expect(loadSettings({ cwd: dir, home: tempRoot() }).rules.allow).toEqual([
+		{ text: "PowerShell(npm test *)", base: dir },
+	]);
+});
+
+test("saveRule refuses a file that doesn't parse and leaves it alone", () => {
+	const file = join(tempRoot(), "bad.json");
+	writeFileSync(file, '{ "permissions": ');
+	expect(() => saveRule(file, "PowerShell(x *)")).toThrow(SettingsError);
+	expect(readFileSync(file, "utf8")).toBe('{ "permissions": ');
 });

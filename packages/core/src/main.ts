@@ -23,6 +23,7 @@ try {
 			version: { type: "boolean" },
 			model: { type: "string" },
 			effort: { type: "string" },
+			mode: { type: "string" },
 			debug: { type: "boolean" },
 			stdio: { type: "boolean" },
 			continue: { type: "boolean", short: "c" },
@@ -56,6 +57,8 @@ try {
 		console.log(`manas ${version}`);
 	} else if (values.stdio) {
 		if (positionals.length > 0) throw new Error("--stdio takes no prompt");
+		if (values.mode)
+			throw new Error("--stdio takes no --mode (send it in session/new)");
 		await stdio(settings());
 	} else if (positionals.length === 1 && positionals[0] === "doctor") {
 		const { lines, ok } = await doctor();
@@ -78,6 +81,7 @@ try {
 			firstPrompt: positionals.join(" ") || undefined,
 			style: detectStyle(process.env),
 			tools: coreTools(),
+			mode: values.mode,
 			resume: pick
 				? "pick"
 				: values.resume

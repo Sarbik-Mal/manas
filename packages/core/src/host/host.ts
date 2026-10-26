@@ -12,14 +12,27 @@ import {
 } from "@manas/protocol";
 import Value from "typebox/value";
 import { version } from "../../package.json";
-import type { LiveSettings, Rule } from "../config/settings";
+import {
+	type LiveSettings,
+	projectFile,
+	type Rule,
+	saveRule,
+} from "../config/settings";
 import { firstMessage } from "../loop/prompt";
 import {
 	createSession,
 	type Session,
 	type SessionEvent,
 } from "../loop/session";
-import { decide, deniedBy, deniedPath } from "../permissions/engine";
+import {
+	decide,
+	deniedBy,
+	deniedPath,
+	MODE_NAMES,
+	type Mode,
+	parseMode,
+	type Suggestion,
+} from "../permissions/engine";
 import { checkEffort } from "../provider/models";
 import { preloadEnv } from "../safety/env-preload";
 import { restoreDeep, restoreStream, Vault } from "../safety/scrub";
@@ -82,6 +95,10 @@ export function createHost(
 	let sessionId: string | null = null;
 	let seq = 0;
 	let lastState: string | undefined;
+	// vibe-check or lowkey; read by every permission check.
+	let mode: Mode = "manual";
+	let lastMode: Mode | undefined;
+	let changeMode: (next: Mode) => void = () => {};
 	let requests = 0;
 	const pending = new Map<
 		string,
@@ -108,9 +125,10 @@ export function createHost(
 				: session?.busy
 					? "running"
 					: "idle";
-		if (state === lastState || !session) return;
+		if ((state === lastState && mode === lastMode) || !session) return;
 		lastState = state;
-		event("state/changed", { state });
+		lastMode = mode;
+		event("state/changed", { state, mode });
 	};
 	// A core → front end request. It never times out; interrupt cancels it.
 	function request(type: string, data: object): Promise<unknown> {
@@ -211,7 +229,7 @@ export function createHost(
 			initialized = true;
 			return { protocol_version: PROTOCOL_VERSION, capabilities: [] };
 		},
-		"session/new"({ cwd, model, effort }) {
+		"session/new"({ cwd, model, effort, mode: asked }) {
 			noSession();
 			// The request wins, then settings. A bad value from settings is
 			// dropped with a warning; a bad one in the request is an error.
@@ -235,6 +253,17 @@ export function createHost(
 				eff = from.effort;
 			}
 			invalidParams(() => checkEffort(m, eff));
+			let md: Mode = "manual";
+			if (asked) invalidParams(() => (md = parseMode(asked)));
+			else if (from.mode) {
+				try {
+					md = parseMode(from.mode);
+				} catch (err) {
+					warnings.push(
+						`settings: ${(err as Error).message} (starting in vibe-check)`,
+					);
+				}
+			}
 			const id = crypto.randomUUID();
 			open(
 				id,
@@ -242,12 +271,13 @@ export function createHost(
 				cwd,
 				m,
 				eff,
+				md,
 				undefined,
 				warnings,
 			);
 			return { session_id: id };
 		},
-		"session/resume"({ session_id, cwd }) {
+		"session/resume"({ session_id, cwd, mode: asked }) {
 			noSession();
 			const file = findSession(session_id, cwd, root);
 			let loaded: Loaded | undefined;
@@ -262,7 +292,15 @@ export function createHost(
 			}
 			const { model: m, effort: eff } = loaded;
 			invalidParams(() => checkEffort(m, eff ?? undefined));
-			open(session_id, file, loaded.start.cwd, m, eff ?? undefined, loaded);
+			// The flag wins, then the mode it was saved in (as Claude Code).
+			let md: Mode = "manual";
+			if (asked) invalidParams(() => (md = parseMode(asked)));
+			else {
+				try {
+					md = parseMode(loaded.mode);
+				} catch {}
+			}
+			open(session_id, file, loaded.start.cwd, m, eff ?? undefined, md, loaded);
 			return { session_id };
 		},
 		"sessions/list"({ cwd }) {
@@ -283,6 +321,13 @@ export function createHost(
 			const s = need();
 			invalidParams(() => s.setEffort(effort ?? undefined));
 			return { model: s.model, effort: s.effort ?? null };
+		},
+		"session/set_mode"({ mode: asked }) {
+			need();
+			let next: Mode = mode;
+			invalidParams(() => (next = parseMode(asked)));
+			changeMode(next);
+			return { mode };
 		},
 		// Prompts carry placeholders in history; the screen gets real values.
 		"checkpoints/list"() {
@@ -335,11 +380,23 @@ export function createHost(
 		cwd: string,
 		model: string,
 		effort: string | undefined,
+		startMode: Mode,
 		loaded?: Loaded,
 		warnings: string[] = [],
 	) {
-		// "Yes, and don't ask again this session" rules (saving them: 2.7).
+		// "Yes, and don't ask again" rules, kept for this session (saved ones
+		// too, so they apply before the settings file reloads).
 		const sessionRules: Rule[] = [];
+		mode = startMode;
+		changeMode = (next) => {
+			if (next === mode) {
+				notice("info", `Already in ${MODE_NAMES[next]}.`);
+				return;
+			}
+			mode = next;
+			store.set({ mode });
+			updateState();
+		};
 		// A bare deny removes the tool for the whole session. One added later
 		// keeps the list (and the prompt cache) and is refused by `permit`.
 		const registry = buildRegistry(
@@ -366,6 +423,7 @@ export function createHost(
 				model: s.model,
 				effort: s.effort ?? null,
 				verbosity,
+				mode,
 				cwd,
 				version,
 				created: new Date().toISOString(),
@@ -403,6 +461,7 @@ export function createHost(
 					rules: settings.current.rules,
 					session: sessionRules,
 					cwd,
+					mode,
 				});
 				if (d.behavior === "allow") return undefined;
 				if (d.behavior === "deny") return { output: d.reason };
@@ -429,11 +488,12 @@ export function createHost(
 					);
 					return { output: "denied (invalid answer from the front end)" };
 				}
-				const { decision, message } = answer;
+				// ponytail: no `updated_input` (a front end editing the call
+				// before it runs); add with editor/open_diff (M11).
+				const { decision, suggestion, message } = answer;
 				if (decision === "allow") return undefined;
 				if (decision === "allow_always") {
-					for (const text of d.suggestions)
-						sessionRules.push({ text, base: cwd });
+					remember(d.suggestions, suggestion ?? null);
 					return undefined;
 				}
 				if (message) return { output: `denied by the user: ${message}` };
@@ -450,10 +510,47 @@ export function createHost(
 		});
 		session = s;
 		sessionId = id;
+		// "Yes, and don't ask again": only a suggestion the core offered,
+		// with any destination. The call itself is allowed either way.
+		const remember = (offered: Suggestion[], chosen: Suggestion | null) => {
+			const match =
+				chosen &&
+				offered.find((o) =>
+					"mode" in o
+						? "mode" in chosen
+						: "rules" in chosen &&
+							o.rules.join("\n") === chosen.rules.join("\n"),
+				);
+			if (!chosen || !match) {
+				notice(
+					"error",
+					"The front end sent a choice that wasn't offered; allowed once, nothing saved.",
+				);
+				return;
+			}
+			if ("mode" in chosen) return changeMode(chosen.mode);
+			const files = settings.current.files;
+			const file = chosen.destination === "user" ? files[0] : projectFile(cwd);
+			const base = chosen.destination === "user" ? dirname(file) : cwd;
+			for (const text of chosen.rules) sessionRules.push({ text, base });
+			if (chosen.destination === "session") return;
+			try {
+				// The tracked-.manas guard leaves the project file out.
+				if (!file || !files.includes(file))
+					throw new Error(`${file ?? "the settings file"} isn't in use.`);
+				for (const text of chosen.rules) saveRule(file, text);
+			} catch (err) {
+				notice(
+					"error",
+					`Couldn't save the rule: ${(err as Error).message} It applies to this session only.`,
+				);
+			}
+		};
 		queueMicrotask(() => {
 			event("session/started", {
 				model,
 				effort: effort ?? null,
+				mode,
 				tools: registry.specs.map((t) => t.name),
 				cwd,
 			});

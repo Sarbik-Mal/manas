@@ -23,7 +23,9 @@ function startCli({
 	resume,
 	tools,
 	cwd = "E:\\x",
+	mode,
 }: {
+	mode?: string;
 	firstPrompt?: string;
 	root?: string;
 	cwd?: string;
@@ -45,6 +47,7 @@ function startCli({
 		root,
 		resume,
 		tools,
+		mode,
 	});
 	const waitFor = async (pred: () => boolean) => {
 		for (let i = 0; i < 400 && !pred(); i++) await Bun.sleep(5);
@@ -288,7 +291,7 @@ test("approval prompt: Yes runs it; read-only commands never ask", async () => {
 	await cli.shows("Manas wants to run: Remove-Item x");
 	expect(cli.out()).toContain("  1. Yes\n");
 	expect(cli.out()).toContain(
-		"  2. Yes, and don't ask again this session for PowerShell(Remove-Item *)\n  3. No",
+		"  2. Yes, and don't ask again for PowerShell(Remove-Item *) in this project\n  3. No",
 	);
 	await cli.shows("Choose 1-3: ");
 	cli.input.write("1\r");
@@ -298,7 +301,7 @@ test("approval prompt: Yes runs it; read-only commands never ask", async () => {
 	await cli.exited;
 });
 
-test("approval prompt: 2 remembers for the session; 3 asks for a reason", async () => {
+test("approval prompt: 2 remembers (for the session when it can't be saved); 3 asks for a reason", async () => {
 	const cli = startCli({ tools: [powershell] });
 	replies.push(
 		ps("Remove-Item a"),
@@ -397,4 +400,51 @@ test("/rewind: pick a prompt, see the change, restore code and conversation", as
 	await cli.waitFor(() => cli.out().endsWith("bump x"));
 	cli.input.write("\x15/exit\r");
 	await cli.exited;
+});
+
+// --- 2.7: modes ---
+
+test("modes: Shift+Tab and /mode switch, the prompt shows lowkey, option 2 on an edit turns it on", async () => {
+	const project = tempRoot();
+	const cli = startCli({ cwd: project, tools: coreTools() });
+	await cli.shows("· vibe-check ·");
+	await cli.type("\x1b[Z");
+	await cli.shows("lowkey on: edits in this project run without asking");
+	await cli.shows("lowkey > ");
+	await cli.type("/mode\r");
+	await cli.shows("Mode: lowkey (choices: vibe-check, lowkey)");
+	await cli.type("/mode plan\r");
+	await cli.shows("scheming (plan) comes in 6.4");
+	await cli.type("/mode vibe-check\r");
+	await cli.shows("vibe-check on: asks before edits");
+
+	replies.push(
+		{ items: [call("write", { file_path: "a.ts", content: "x\n" })] },
+		say("made a"),
+		{ items: [call("write", { file_path: "b.ts", content: "y\n" })] },
+		say("made b"),
+	);
+	await cli.type("make a\r");
+	await cli.shows("  2. Yes, and switch to lowkey for this session\n  3. No");
+	await cli.shows("Choose 1-3: ");
+	cli.input.write("2\r");
+	await cli.shows("made a");
+	await cli.type("make b\r");
+	await cli.shows("made b");
+	expect(cli.out().split("Manas wants to")).toHaveLength(2);
+	expect(readFileSync(join(project, "b.ts"), "utf8")).toBe("y\n");
+	expect(cli.out().split("lowkey on:")).toHaveLength(3);
+	await cli.type("/exit\r");
+	await cli.exited;
+});
+
+test("--mode sets the starting mode; a bad one stops the CLI", async () => {
+	const a = startCli({ mode: "lowkey" });
+	await a.shows("· lowkey ·");
+	await a.shows("lowkey > ");
+	await a.type("/exit\r");
+	await a.exited;
+	const b = startCli({ mode: "ghost" });
+	expect(await b.exited).toBe(1);
+	expect(b.out()).toContain("ghost (dontAsk) comes in 8.7");
 });

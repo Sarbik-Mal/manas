@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
+import { mkdtempSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Rules } from "../config/settings";
-import { type Checked, decide } from "./engine";
+import { type Checked, decide, type Mode, parseMode } from "./engine";
 
 const cwd = "E:\\proj";
 const home = "C:\\Users\\me";
@@ -127,11 +130,17 @@ test("suggestions: one prefix per part that asked, at most 5", async () => {
 		await run("git push origin main; Remove-Item x; Get-ChildItem"),
 	).toMatchObject({
 		behavior: "ask",
-		suggestions: ["PowerShell(git push *)", "PowerShell(Remove-Item *)"],
+		suggestions: [
+			{
+				rules: ["PowerShell(git push *)", "PowerShell(Remove-Item *)"],
+				destination: "project",
+			},
+		],
 	});
 	const many = "npm a; npm b; npm c; npm d; npm e; npm f";
 	expect(
-		((await run(many)) as { suggestions: string[] }).suggestions,
+		((await run(many)) as { suggestions: { rules: string[] }[] }).suggestions[0]
+			.rules,
 	).toHaveLength(5);
 });
 
@@ -194,18 +203,80 @@ test("paths: gitignore-style with Claude's anchors, case-insensitive", async () 
 	expect(await at(grep, "src\\a.ts", rules({ deny: ["Read(src/**)"] }))).toBe(
 		"deny",
 	);
-	// Editing asks, suggesting the folder; an allow rule opens it.
+	// Editing in the project offers lowkey; outside it, a session rule for
+	// the folder; an allow rule opens it.
 	expect(
 		await decide(
 			edit,
 			{ path: "src\\ui\\a.ts" },
 			{ rules: rules(), session: [], cwd, home },
 		),
+	).toMatchObject({ behavior: "ask", suggestions: [{ mode: "acceptEdits" }] });
+	expect(
+		await decide(
+			write,
+			{ path: "D:\\other\\a.ts" },
+			{ rules: rules(), session: [], cwd, home },
+		),
 	).toMatchObject({
 		behavior: "ask",
-		suggestions: ["Edit(src/ui/**)"],
+		suggestions: [{ rules: ["Edit(//d/other/**)"], destination: "session" }],
 	});
 	expect(
 		await at(edit, "src\\ui\\a.ts", rules({ allow: ["Edit(src/**)"] })),
 	).toBe("allow");
+});
+
+test("lowkey: edits in the project run; outside, protected names and junctions out ask", async () => {
+	const project = mkdtempSync(join(tmpdir(), "manas-test-"));
+	const outside = mkdtempSync(join(tmpdir(), "manas-test-"));
+	symlinkSync(outside, join(project, "link"), "junction");
+	const edit = fileTool("edit", false);
+	const ctx = (mode: Mode, r = rules()) => ({
+		rules: r,
+		session: [],
+		cwd: project,
+		home,
+		mode,
+	});
+	const at = (path: string, mode: Mode = "acceptEdits", r = rules()) =>
+		decide(edit, { path }, ctx(mode, r)).then((d) => d.behavior);
+	expect(await at("src/a.ts")).toBe("allow");
+	expect(await at(join(project, "new", "deep.ts"))).toBe("allow");
+	expect(await at(join(outside, "a.ts"))).toBe("ask");
+	expect(await at("link/a.ts")).toBe("ask");
+	for (const p of [
+		".git/config",
+		"sub/.vscode/settings.json",
+		".manas/settings.json",
+		".NPMRC",
+		"pkg/.mcp.json",
+		".husky/pre-commit",
+		".idea/x",
+	]) {
+		expect([p, await at(p)]).toEqual([p, "ask"]);
+	}
+	expect(await at("src/a.ts", "manual")).toBe("ask");
+	// Deny and ask rules still win.
+	expect(
+		await at("src/a.ts", "acceptEdits", rules({ deny: ["Edit(src/**)"] })),
+	).toBe("deny");
+	expect(
+		await at("src/a.ts", "acceptEdits", rules({ ask: ["Edit(src/**)"] })),
+	).toBe("ask");
+	// Commands aren't edits (shell file commands wait for 3.1).
+	expect(
+		(await decide(powershell, { command: "Remove-Item x" }, ctx("acceptEdits")))
+			.behavior,
+	).toBe("ask");
+});
+
+test("parseMode: plain and display names, any case; later modes refused", () => {
+	expect(parseMode("lowkey")).toBe("acceptEdits");
+	expect(parseMode("Vibe-Check")).toBe("manual");
+	expect(parseMode("acceptedits")).toBe("acceptEdits");
+	expect(() => parseMode("let-it-cook")).toThrow(
+		"let-it-cook (auto) comes in 8.5",
+	);
+	expect(() => parseMode("x")).toThrow('unknown mode "x"');
 });

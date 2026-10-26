@@ -24,6 +24,8 @@ export type Start = {
 	effort: string | null;
 	// Missing in sessions from before 1.10: nothing was sent.
 	verbosity?: string;
+	// Missing in sessions from before 2.7: vibe-check.
+	mode?: string;
 	cwd: string;
 	version: string;
 	created: string;
@@ -37,7 +39,7 @@ export type Usage = {
 type Line =
 	| ({ kind: "start" } & Start)
 	| { kind: "item"; item: ResponseInputItem }
-	| { kind: "set"; model?: string; effort?: string | null }
+	| { kind: "set"; model?: string; effort?: string | null; mode?: string }
 	| { kind: "usage"; turn_id: string; usage: Usage }
 	// What the model read (2.1): path, hash and time, never content.
 	| { kind: "read"; read: Read }
@@ -85,7 +87,7 @@ export function openStore(
 			write({ kind: "item", item });
 		},
 		// Only once the file exists; before that the start line carries them.
-		set(change: { model?: string; effort?: string | null }) {
+		set(change: { model?: string; effort?: string | null; mode?: string }) {
 			if (exists) write({ kind: "set", ...change });
 		},
 		usage(turn_id: string, usage: Usage) {
@@ -107,6 +109,7 @@ export type Loaded = {
 	reads: Read[];
 	model: string;
 	effort: string | null;
+	mode: string;
 	skipped: number;
 };
 
@@ -127,6 +130,7 @@ export function loadSession(file: string): Loaded {
 	const start = lines.find((l) => l.kind === "start");
 	if (!start) throw new Error(`${basename(file)} has no start line`);
 	let { model, effort } = start;
+	let mode = start.mode ?? "manual";
 	const items: ResponseInputItem[] = [];
 	const reads: Read[] = [];
 	for (const l of lines) {
@@ -138,6 +142,7 @@ export function loadSession(file: string): Loaded {
 		}
 		if (l.kind === "set") {
 			model = l.model ?? model;
+			mode = l.mode ?? mode;
 			if (l.effort !== undefined) effort = l.effort;
 		}
 	}
@@ -158,7 +163,7 @@ export function loadSession(file: string): Loaded {
 		items.push(fix);
 		appendFileSync(file, `${JSON.stringify({ kind: "item", item: fix })}\n`);
 	}
-	return { start, items, reads, model, effort, skipped };
+	return { start, items, reads, model, effort, mode, skipped };
 }
 
 export type Listed = {

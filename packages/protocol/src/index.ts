@@ -60,10 +60,12 @@ export const Requests = {
 		client: Type.Object({ name: Type.String(), version: Type.String() }),
 		capabilities: Type.Array(Type.String()),
 	}),
+	// `mode`: plain or display name; null = settings, else vibe-check.
 	"session/new": Type.Object({
 		cwd: Type.String(),
 		model: Nullable(Type.String()),
 		effort: Nullable(Type.String()),
+		mode: Nullable(Type.String()),
 	}),
 	// `next` (default): folded into the running turn once its tools finish.
 	// `later`: after the turn ends. `now`: interrupts, then runs.
@@ -73,9 +75,11 @@ export const Requests = {
 	}),
 	// Loads a saved session and replays it as events with `replay: true`.
 	// Looks in `cwd`'s project first, then in every project.
+	// `mode` null: the mode the session was saved in.
 	"session/resume": Type.Object({
 		session_id: Type.String(),
 		cwd: Type.String(),
+		mode: Nullable(Type.String()),
 	}),
 	// Saved sessions of `cwd`'s project, newest first.
 	"sessions/list": Type.Object({ cwd: Type.String() }),
@@ -92,6 +96,9 @@ export const Requests = {
 	"session/set_effort": Type.Object({
 		effort: Type.Union([Type.String(), Type.Null()]),
 	}),
+	// vibe-check (`manual`) or lowkey (`acceptEdits`), plain or display name;
+	// applies from the next tool call.
+	"session/set_mode": Type.Object({ mode: Type.String() }),
 	// The points /rewind can go back to, oldest first (2.6).
 	"checkpoints/list": Type.Object({}),
 	// What restoring the code of a checkpoint would change, before doing it.
@@ -107,6 +114,20 @@ export const Requests = {
 		]),
 	}),
 };
+const Mode = Type.Union([Type.Literal("manual"), Type.Literal("acceptEdits")]);
+// What "Yes, and don't ask again" does: add rules to a settings file (or the
+// session), or switch to lowkey. A front end may change only `destination`.
+const Suggestion = Type.Union([
+	Type.Object({
+		rules: Type.Array(Type.String()),
+		destination: Type.Union([
+			Type.Literal("session"),
+			Type.Literal("project"),
+			Type.Literal("user"),
+		]),
+	}),
+	Type.Object({ mode: Type.Literal("acceptEdits") }),
+]);
 const ModelState = Type.Object({
 	model: Type.String(),
 	effort: Type.Union([Type.String(), Type.Null()]),
@@ -132,6 +153,7 @@ export const Results = {
 	}),
 	"session/set_model": ModelState,
 	"session/set_effort": ModelState,
+	"session/set_mode": Type.Object({ mode: Mode }),
 	// Prompts, oldest first, then (only while it's the newest checkpoint) the
 	// undo or redo of the last code rewind: `prompt` null, `undo` saying which
 	// prompt that rewind went back to and which files it changes back.
@@ -186,8 +208,8 @@ export const Usage = Type.Object({
 // Core → front end requests: their fields, and what the response's `result`
 // holds. Front ends answer; requests never time out but can be cancelled.
 export const CoreRequests = {
-	// A tool call needs the user's yes or no. `suggestions`: the rules "Yes,
-	// and don't ask again this session" would add.
+	// A tool call needs the user's yes or no. `suggestions`: what "Yes, and
+	// don't ask again" can do; `allow_always` sends back the chosen one.
 	"permission/request": Type.Object({
 		tool_call_id: Type.String(),
 		tool: Type.String(),
@@ -196,7 +218,7 @@ export const CoreRequests = {
 		// What the change does, e.g. an edit's -/+ lines (2.2).
 		diff: Nullable(Type.String()),
 		reason: Type.String(),
-		suggestions: Type.Array(Type.String()),
+		suggestions: Type.Array(Suggestion),
 	}),
 };
 export const CoreResults = {
@@ -208,6 +230,7 @@ export const CoreResults = {
 			Type.Literal("allow_always"),
 			Type.Literal("deny"),
 		]),
+		suggestion: Nullable(Suggestion),
 		message: Nullable(Type.String()),
 	}),
 };
@@ -216,6 +239,7 @@ export const Events = {
 	"session/started": Type.Object({
 		model: Type.String(),
 		effort: Type.Union([Type.String(), Type.Null()]),
+		mode: Mode,
 		tools: Type.Array(Type.String()),
 		cwd: Type.String(),
 	}),
@@ -264,6 +288,7 @@ export const Events = {
 			Type.Literal("waiting_for_user"),
 			Type.Literal("idle"),
 		]),
+		mode: Mode,
 	}),
 	notice: Type.Object({
 		level: Type.Union([
