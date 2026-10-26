@@ -27,6 +27,30 @@ test("tool rows: first string field or short JSON, cut, Claude's symbols", () =>
 	);
 });
 
+test("searches and reads show a count, as in Claude Code", () => {
+	const as = (name: string, input: unknown = {}) => ({ name, input });
+	const row = (output: string, tool: { name: string; input: unknown }) =>
+		r.toolFinished("ok", output, uni, tool);
+	expect(row("dup.ts\na.ts\n(Results are truncated: …)", as("glob"))).toBe(
+		"  ⎿ ok · Found 2 files",
+	);
+	expect(row("No files found", as("glob"))).toBe("  ⎿ ok · No files found");
+	expect(row("     1\tlet a = 1;\n     2\tlet b;", as("read"))).toBe(
+		"  ⎿ ok · Read 2 lines",
+	);
+	expect(row("File unchanged since last read.", as("read"))).toBe(
+		"  ⎿ ok · File unchanged since last read.",
+	);
+	expect(row("a.ts", as("grep", { output_mode: null }))).toBe(
+		"  ⎿ ok · Found 1 file",
+	);
+	expect(
+		row("a.ts:1:x\n--\nb.ts:4:x", as("grep", { output_mode: "content" })),
+	).toBe("  ⎿ ok · Found 2 lines");
+	expect(row("No matches found", as("grep"))).toBe("  ⎿ ok · No matches found");
+	expect(row("ran: ls", as("powershell"))).toBe("  ⎿ ok · ran: ls");
+});
+
 test("the old console gets ASCII", () => {
 	expect(r.toolStarted("read", { path: "a" }, ascii)).toBe("* read(a)");
 	expect(r.toolFinished("ok", "done", ascii)).toBe("  > ok - done");

@@ -1,9 +1,10 @@
-import { readFileSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import { extname, isAbsolute, relative, resolve } from "node:path";
 import Type, { type TSchema } from "typebox";
 import { rgPath } from "../platform/win/bin";
 import { sha256 } from "./reads";
 import { defineTool, type ToolCtx } from "./registry";
+import { readBytes, statOf } from "./textfile";
 
 // read, grep and glob (tools.md §1), shaped like Claude Code's: same inputs,
 // limits and notices, so a model used to those tools needs no new habits.
@@ -70,7 +71,7 @@ export const read = defineTool({
 	permission: { path: (i) => i.file_path },
 	async run({ file_path, offset, limit }, ctx) {
 		const path = full(ctx, file_path);
-		const info = statSync(path, { throwIfNoEntry: false });
+		const info = statOf(path);
 		if (!info) throw new Error(`file not found: ${file_path}`);
 		if (info.isDirectory())
 			throw new Error(
@@ -85,7 +86,7 @@ export const read = defineTool({
 				`${file_path} is ${Math.round(size / 1024)} KB, over the 256 KB limit for a whole-file read. Read it in parts with offset and limit, or search it with grep.`,
 			);
 		}
-		const bytes = readFileSync(path);
+		const bytes = await readBytes(path, file_path);
 		const text = decode(bytes);
 		if (text === undefined)
 			throw new Error(`${file_path} is a binary file, not text`);

@@ -1,17 +1,26 @@
-import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import Type from "typebox";
 import { showDiff } from "./diff";
 import { sha256 } from "./reads";
 import { defineTool, type ToolCtx } from "./registry";
+import {
+	decodeText,
+	encodeText,
+	readBytes,
+	statOf,
+	type Text,
+	withEol,
+	writeVerified,
+} from "./textfile";
 
 // edit (tools.md §1), shaped like Claude Code's Edit: exact text, once (or
 // every copy with replace_all), only in a file the model has read. Every
 // check runs before the approval prompt, so you're never asked about an edit
-// that can't apply.
-// ponytail: CRLF, BOM, UTF-16 and other encodings are refused until 2.4; no
-// backup until 2.5. No \uXXXX swap as Claude Code tries (rare, and it was
-// reported breaking exact matches).
+// that can't apply. The file keeps its encoding, and only the changed lines
+// change: old and new get the file's line ending, and the match runs on the
+// raw text, so a mixed file stays mixed (Claude Code rewrites every line).
+// ponytail: no backup until 2.5. No \uXXXX swap as Claude Code tries (rare,
+// and it was reported breaking exact matches).
 
 const MAX_BYTES = 1024 ** 3; // Claude Code's limit
 
@@ -30,7 +39,8 @@ type Plan = {
 	path: string;
 	// Of the bytes the plan was made from: run refuses if they changed since.
 	hash: string;
-	after: string;
+	// The new file, encoded as the old one was.
+	bytes: Buffer;
 	diff: string;
 	how: "exact" | "quotes" | "loose";
 	stale: boolean;
@@ -58,12 +68,14 @@ export function findLoose(
 		[];
 	for (let at = 0; ; ) {
 		const nl = text.indexOf("\n", at);
-		const end = nl < 0 ? text.length : nl;
+		// A line ends before its CRLF, so a replace keeps the line break.
+		let end = nl < 0 ? text.length : nl;
+		if (end > at && text[end - 1] === "\r") end--;
 		lines.push({
 			norm: text.slice(at, end).trimEnd(),
 			start: at,
 			end,
-			next: nl < 0 ? end : end + 1,
+			next: nl < 0 ? end : nl + 1,
 		});
 		if (nl < 0) break;
 		at = nl + 1;
@@ -103,24 +115,19 @@ export function restoreAll(ctx: ToolCtx, ...texts: string[]) {
 
 // The checks before a file is changed, in Claude Code's order: a missing
 // file (write creates it), or its text and whether it changed since the read.
-export function openForChange(
+export async function openForChange(
 	ctx: ToolCtx,
 	file_path: string,
 	verb: "edited" | "written",
-):
+): Promise<
 	| string
 	| { path: string; missing: true }
-	| {
-			path: string;
-			missing: false;
-			text: string;
-			hash: string;
-			stale: boolean;
-	  } {
+	| ({ path: string; missing: false; hash: string; stale: boolean } & Text)
+> {
 	const path = resolve(ctx.cwd, file_path);
 	if (ctx.denied(path))
 		return `File is covered by a Read deny rule in your permission settings and cannot be ${verb}.`;
-	const info = statSync(path, { throwIfNoEntry: false });
+	const info = statOf(path);
 	if (!info) return { path, missing: true };
 	if (info.isDirectory()) return `${file_path} is a folder, not a file.`;
 	if (/\.ipynb$/i.test(path))
@@ -128,32 +135,19 @@ export function openForChange(
 	if (info.size > MAX_BYTES)
 		return `${file_path} is too large to change (over 1 GiB).`;
 
-	const bytes = readFileSync(path);
-	const unsupported = (what: string) =>
-		`${file_path} ${what}; changing such files isn't supported yet. Tell the user, and don't change it through the shell.`;
-	if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf)
-		return unsupported("starts with a UTF-8 byte-order mark");
-	if (
-		(bytes[0] === 0xff && bytes[1] === 0xfe) ||
-		(bytes[0] === 0xfe && bytes[1] === 0xff)
-	)
-		return unsupported("is UTF-16");
-	if (bytes.includes(0)) return unsupported("is binary");
-	let text: string;
-	try {
-		text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-	} catch {
-		return unsupported("isn't valid UTF-8");
-	}
-	if (text.includes("\r"))
-		return unsupported("has Windows (CRLF) line endings");
+	const bytes = await readBytes(path, file_path);
+	// Anything but UTF-8 (with or without a BOM) and UTF-16 with a BOM is
+	// refused rather than corrupted.
+	const decoded = decodeText(bytes);
+	if (typeof decoded === "string")
+		return `${file_path} ${decoded}; it can't be changed safely. Tell the user, and don't change it through the shell.`;
 
 	const seen = ctx.reads.get(path);
 	if (!seen) return NOT_READ;
 	if (seen.partial)
 		return "File has only been read in part (a PARTIAL view). Read the rest with offset and limit before changing it.";
 	const hash = sha256(bytes);
-	return { path, missing: false, text, hash, stale: seen.hash !== hash };
+	return { path, missing: false, hash, stale: seen.hash !== hash, ...decoded };
 }
 
 // Every check, in Claude Code's order. Returns why the edit can't apply, or
@@ -162,15 +156,16 @@ async function plan(i: Input, ctx: ToolCtx): Promise<string | Plan> {
 	// The model sees placeholders; the file gets the real values.
 	const restored = restoreAll(ctx, i.old_string, i.new_string);
 	if (typeof restored === "string") return restored;
-	const [old, neu] = restored;
-	if (old === neu)
+	if (restored[0] === restored[1])
 		return "No changes to make: old_string and new_string are exactly the same.";
-	if (old === "")
+	if (restored[0] === "")
 		return "old_string is empty. edit only replaces existing text; to create a file, use write.";
-	const file = openForChange(ctx, i.file_path, "edited");
+	const file = await openForChange(ctx, i.file_path, "edited");
 	if (typeof file === "string") return file;
 	if (file.missing) return `File does not exist: ${i.file_path}`;
-	const { path, text, hash, stale } = file;
+	const { path, text, hash, stale, encoding, eol } = file;
+	// The model writes \n; the file keeps its own line ending.
+	const [old, neu] = restored.map((s) => withEol(s, eol));
 
 	const all = i.replace_all === true;
 	const exact = find(text, old);
@@ -203,7 +198,7 @@ async function plan(i: Input, ctx: ToolCtx): Promise<string | Plan> {
 	for (const s of [...spans].reverse())
 		after = after.slice(0, s.start) + neu + after.slice(s.end);
 	const diff = showDiff(text, after);
-	return { path, hash, after, diff, how, stale };
+	return { path, hash, bytes: encodeText(after, encoding), diff, how, stale };
 }
 
 // validate's plan, kept for preview and run (the same input object goes
@@ -245,16 +240,16 @@ export const edit = defineTool({
 		plans.delete(i);
 		p ??= await plan(i, ctx);
 		if (typeof p === "string") throw new Error(p);
-		if (sha256(readFileSync(p.path)) !== p.hash) {
+		if (sha256(await readBytes(p.path, i.file_path)) !== p.hash) {
 			throw new Error(
 				`${i.file_path} changed while waiting for approval. Read it again.`,
 			);
 		}
-		writeFileSync(p.path, p.after);
+		const mtime = await writeVerified(p.path, p.bytes, i.file_path);
 		const before = ctx.reads.get(p.path);
 		ctx.reads.set(p.path, {
-			hash: sha256(Buffer.from(p.after)),
-			mtime: statSync(p.path).mtimeMs,
+			hash: sha256(p.bytes),
+			mtime,
 			offset: before?.offset ?? null,
 			limit: before?.limit ?? null,
 			partial: false,

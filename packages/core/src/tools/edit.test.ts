@@ -141,21 +141,19 @@ test("refused before any prompt: partial reads, encodings, notebooks, empty or s
 	const wide = Array.from({ length: 60 }, () => "y".repeat(2000)).join("\n");
 	const { ctx, look } = project({
 		"a.ts": "a\n",
-		"crlf.ts": "a\r\nb\r\n",
-		"bom.ts": "﻿a\n",
-		"u16.ts": new Uint8Array([0xff, 0xfe, 0x61, 0]),
-		"bad.ts": new Uint8Array([0x61, 0xff, 0x62]),
+		// "café" in Windows-1252, a binary file, UTF-16 with no BOM.
+		"cp1252.ts": new Uint8Array([0x63, 0x61, 0x66, 0xe9]),
+		"bin.ts": new Uint8Array([0x61, 0, 0x62]),
+		"u16.ts": new Uint8Array([0x61, 0, 0x62, 0]),
 		"n.ipynb": "{}",
 		"denied.ts": "a\n",
 		"wide.ts": wide,
 	});
-	for (const f of ["a.ts", "crlf.ts", "bom.ts", "u16.ts", "wide.ts"])
-		await look(f);
+	for (const f of ["a.ts", "wide.ts"]) await look(f);
 	const on = (file_path: string) => apply(ctx, E("a", "b", { file_path }));
-	expect(await on("crlf.ts")).toContain("CRLF");
-	expect(await on("bom.ts")).toContain("byte-order mark");
-	expect(await on("u16.ts")).toContain("UTF-16");
-	expect(await on("bad.ts")).toContain("isn't valid UTF-8");
+	expect(await on("cp1252.ts")).toContain("such as Windows-1252");
+	expect(await on("bin.ts")).toContain("is binary");
+	expect(await on("u16.ts")).toContain("is binary");
 	expect(await on("n.ipynb")).toContain("Jupyter notebook");
 	expect(await on("denied.ts")).toContain("Read deny rule");
 	expect(await on("nope.ts")).toContain("File does not exist");

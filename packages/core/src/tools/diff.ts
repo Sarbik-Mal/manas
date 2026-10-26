@@ -9,7 +9,9 @@ const MAX_ROWS = 40;
 
 export function showDiff(before: string, after: string) {
 	const rows: string[] = [];
-	for (const h of structuredPatch("", "", before, after, "", "", {
+	// Line endings never show; only what the lines say.
+	const lf = (s: string) => s.replace(/\r\n/g, "\n");
+	for (const h of structuredPatch("", "", lf(before), lf(after), "", "", {
 		context: 3,
 	}).hunks) {
 		rows.push(`line ${h.newStart}:`);

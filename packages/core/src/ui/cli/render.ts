@@ -36,10 +36,43 @@ export function toolStarted(name: string, input: unknown, st: Style) {
 	return dim(`${sym(st).tool} ${name}(${cut(summary, 60, st)})`, st);
 }
 
-// `  ⎿ ok · first line` under the tool row; errors in red.
-export function toolFinished(status: string, output: string, st: Style) {
+// What a search or read found, as Claude Code shows it ("Found 8 files",
+// "Read 3 lines"); undefined when there's nothing to count (an empty result,
+// the "unchanged" stub, another tool).
+function summary(name: string, input: unknown, output: string) {
+	const rows = output.split("\n");
+	const results = rows.filter((l) => l && !l.startsWith("(") && l !== "--");
+	const n = (count: number, what: string) =>
+		`${count} ${what}${count === 1 ? "" : "s"}`;
+	if (name === "read") {
+		const lines = rows.filter((l) => /^\s*\d+\t/.test(l)).length;
+		return lines > 0 ? `Read ${n(lines, "line")}` : undefined;
+	}
+	if (/^No (files|matches) found/.test(output)) return undefined;
+	if (name === "glob") return `Found ${n(results.length, "file")}`;
+	if (name === "grep") {
+		const mode = (input as { output_mode?: string } | undefined)?.output_mode;
+		return mode === "content"
+			? `Found ${n(results.length, "line")}`
+			: `Found ${n(results.length, "file")}`;
+	}
+	return undefined;
+}
+
+// `  ⎿ ok · first line` under the tool row (a count for searches and reads);
+// errors in red.
+export function toolFinished(
+	status: string,
+	output: string,
+	st: Style,
+	tool?: { name: string; input: unknown },
+) {
 	const s = sym(st);
-	const first = cut(output.split("\n")[0].trim(), 80, st);
+	const found =
+		status === "ok" && tool
+			? summary(tool.name, tool.input, output)
+			: undefined;
+	const first = found ?? cut(output.split("\n")[0].trim(), 80, st);
 	if (status === "ok") return dim(`  ${s.result} ok ${s.dot} ${first}`, st);
 	if (status === "interrupted") return dim(`  ${s.result} interrupted`, st);
 	return red(`  ${s.result} ${first}`, st);

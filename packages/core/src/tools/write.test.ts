@@ -82,16 +82,12 @@ test("placeholders become real values; unknown ones are refused", async () => {
 test("refused: encodings, notebooks, denied files, folders, PARTIAL views", async () => {
 	const wide = Array.from({ length: 60 }, () => "y".repeat(2000)).join("\n");
 	const { ctx, look } = project({
-		"crlf.ts": "a\r\n",
-		"bom.ts": "﻿a\n",
-		"u16.ts": new Uint8Array([0xff, 0xfe, 0x61, 0]),
+		"cp1252.ts": new Uint8Array([0x63, 0x61, 0x66, 0xe9]),
 		"n.ipynb": "{}",
 		"wide.ts": wide,
 	});
 	await look("wide.ts");
-	expect(await apply(ctx, "crlf.ts", "b")).toContain("CRLF");
-	expect(await apply(ctx, "bom.ts", "b")).toContain("byte-order mark");
-	expect(await apply(ctx, "u16.ts", "b")).toContain("UTF-16");
+	expect(await apply(ctx, "cp1252.ts", "b")).toContain("such as Windows-1252");
 	expect(await apply(ctx, "n.ipynb", "{}")).toContain("Jupyter notebook");
 	expect(await apply(ctx, "denied.ts", "b")).toContain("cannot be written");
 	expect(await apply(ctx, ".", "b")).toContain("is a folder");

@@ -52,6 +52,8 @@ export async function runCli({
 }): Promise<number> {
 	const write = (s: string) => output.write(s);
 	let atLineStart = true;
+	// Running tool calls, so a finished row knows which tool it was.
+	const calls = new Map<string, { name: string; input: unknown }>();
 	const say = (s: string) => {
 		if (!atLineStart) write("\n");
 		write(`${s}\n`);
@@ -152,11 +154,18 @@ export async function runCli({
 				else if (!atLineStart) say("");
 				return;
 			case "tool/started":
+				calls.set(e.tool_call_id as string, {
+					name: e.name as string,
+					input: e.input,
+				});
 				return say(r.toolStarted(e.name as string, e.input, style));
-			case "tool/finished":
+			case "tool/finished": {
+				const call = calls.get(e.tool_call_id as string);
+				calls.delete(e.tool_call_id as string);
 				return say(
-					r.toolFinished(e.status as string, e.output as string, style),
+					r.toolFinished(e.status as string, e.output as string, style, call),
 				);
+			}
 			case "turn/finished":
 				if (e.stop_reason === "interrupted") say(r.interrupted(style));
 				return;

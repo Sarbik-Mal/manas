@@ -1,5 +1,6 @@
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
+import { io } from "./textfile";
 
 // What the model has read this session (tools.md §1), so edit and write can
 // insist on a read first and spot a file that changed since. Saved with the
@@ -28,7 +29,8 @@ export type Read = {
 export function fileKey(path: string) {
 	let p = resolve(path);
 	try {
-		p = realpathSync.native(p);
+		// A long path goes in with `\\?\` (textfile.ts) and may come back with it.
+		p = realpathSync.native(io(p)).replace(/^\\\\\?\\/, "");
 	} catch {}
 	return p.toLowerCase();
 }
