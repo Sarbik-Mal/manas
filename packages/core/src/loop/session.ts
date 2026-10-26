@@ -1,9 +1,10 @@
+import { isAbsolute, relative } from "node:path";
 import type { ResponseInputItem } from "openai/resources/responses/responses";
 import { capability, checkEffort } from "../provider/models";
 import type { Usage } from "../provider/openai";
 import { scrubItem, type Vault } from "../safety/scrub";
 import { CUT_OFF, type Store, textOf } from "../session/store";
-import type { Backups } from "../tools/backups";
+import type { Backups, Undo } from "../tools/backups";
 import type { Permit, Registry, SessionCtx } from "../tools/registry";
 import { dateNote, today as localToday } from "./prompt";
 import { type LoopEvent, runTurn } from "./turn";
@@ -28,6 +29,15 @@ export type SessionEvent =
 	  };
 
 type Queued = { id: string; text: string; priority: Priority };
+
+// A point /rewind can go back to: a prompt, or the undo (or redo) of the
+// last code rewind, which holds code only.
+export type RewindPoint = {
+	id: string;
+	time: string;
+	prompt: string | null;
+	undo: Undo | null;
+};
 
 // memory-management.md §6 and §7: the user may change either mid-chat, and is
 // told plainly what it costs. The core never changes them by itself.
@@ -170,6 +180,34 @@ export function createSession({
 		emit({ type: "idle" });
 	}
 
+	// A path inside the project as relative, like the tools show it.
+	const shown = (p: string) => {
+		const rel = toolCtx ? relative(toolCtx.cwd, p) : p;
+		return rel.startsWith("..") || isAbsolute(rel) ? p : rel;
+	};
+	// The points /rewind can go back to, oldest first: each prompt still in
+	// the conversation (its checkpoint sits just before it), then the undo of
+	// the last code rewind, only while nothing has happened since (undoing an
+	// older one would also wipe the later work).
+	const checkpoints = (): RewindPoint[] => {
+		const all = backups?.list() ?? [];
+		const points = all.flatMap((c): RewindPoint[] => {
+			const item = history[c.items];
+			if (c.undo || c.cut || !item || !("role" in item) || item.role !== "user")
+				return [];
+			return [{ id: c.id, time: c.time, prompt: textOf(item), undo: null }];
+		});
+		const last = all.at(-1);
+		if (last?.undo)
+			points.push({
+				id: last.id,
+				time: last.time,
+				prompt: null,
+				undo: last.undo,
+			});
+		return points;
+	};
+
 	return {
 		history,
 		// Returns at once; the turn starts on the next tick, so a front end gets
@@ -198,6 +236,64 @@ export function createSession({
 		// The saved conversation as events, so a front end can show it again.
 		replay() {
 			return replayEvents(history);
+		},
+		checkpoints,
+		// What a code rewind to `id` would change, paths as the user sees them.
+		async preview(id: string) {
+			return ((await backups?.preview(id)) ?? []).map(({ blob: _, ...c }) => ({
+				...c,
+				path: shown(c.path),
+			}));
+		},
+		// /rewind (2.6): code, conversation or both back to before checkpoint
+		// `id`'s prompt. A code rewind first saves the files as they are now as
+		// an undo point; using that saves a redo point, so it flips back and forth.
+		async rewind(id: string, scope: "code" | "conversation" | "both") {
+			if (running) throw new Error("stop the current turn first (Esc)");
+			const point = checkpoints().find((c) => c.id === id);
+			if (!point) throw new Error(`no checkpoint ${id}`);
+			if (point.undo && scope !== "code")
+				throw new Error(`an ${point.undo.kind} point has only code to restore`);
+			let restored: string[] = [];
+			let failed: { path: string; error: string }[] = [];
+			if (scope !== "conversation" && backups) {
+				const changes = (await backups.preview(id)) ?? [];
+				if (changes.length > 0) {
+					await backups.checkpoint(history.length, {
+						kind: point.undo?.kind === "undo" ? "redo" : "undo",
+						prompt: point.undo?.prompt ?? point.prompt ?? "",
+						paths: changes.map((c) => shown(c.path)),
+					});
+					({ restored, failed } = await backups.restore(id));
+				}
+			}
+			if (scope !== "code") {
+				const items = backups?.list().find((c) => c.id === id)?.items ?? 0;
+				history.length = items;
+				store?.rewind(items);
+				toolCtx?.reads.clear();
+				backups?.cut(id);
+			} else if (restored.length > 0) {
+				// The model's history still shows its later edits; the stale
+				// check enforces the re-read, this says why.
+				const files = restored.map(shown).join(", ");
+				const to = `the prompt "${oneLine(point.undo?.prompt ?? point.prompt ?? "")}"`;
+				const how =
+					point.undo?.kind === "undo"
+						? `to how they were before rewinding to ${to}`
+						: point.undo?.kind === "redo"
+							? `to how rewinding to ${to} left them`
+							: `to how they were before ${to}`;
+				history.push({
+					role: "developer",
+					content: `The user restored ${files} ${how}. Read them again before changing them.`,
+				});
+			}
+			return {
+				prompt: point.prompt,
+				restored: restored.map(shown),
+				failed: failed.map((f) => ({ ...f, path: shown(f.path) })),
+			};
 		},
 		get busy() {
 			return running !== undefined;
@@ -302,3 +398,8 @@ export function replayEvents(history: ResponseInputItem[]): SessionEvent[] {
 	}
 	return out;
 }
+
+const oneLine = (s: string) => {
+	const line = s.trim().split("\n")[0];
+	return line.length > 60 ? `${line.slice(0, 60)}...` : line;
+};

@@ -87,5 +87,30 @@ test("commands", () => {
 		arg: "gpt-4o-mini",
 	});
 	expect(parseCommand("/effort")).toEqual({ name: "effort", arg: undefined });
-	expect(parseCommand("/rewind")).toEqual({ name: "unknown", text: "/rewind" });
+	expect(parseCommand("/plan")).toEqual({ name: "unknown", text: "/plan" });
+});
+
+test("rewind rows: a prompt, or the undo / redo of the last code rewind", () => {
+	const now = Date.parse("2026-10-27T10:00:00Z");
+	const time = "2026-10-27T09:58:00Z";
+	expect(
+		r.rewindRow(
+			2,
+			{ checkpoint_id: "c1", prompt: "fix it", time, undo: null },
+			now,
+			uni,
+		),
+	).toBe("2. fix it · 2 min ago");
+	const undo = {
+		kind: "undo" as const,
+		prompt: "fix it",
+		paths: ["a.ts", "b.ts"],
+	};
+	const point = { checkpoint_id: "c3", prompt: null, time, undo };
+	expect(r.rewindRow(1, point, now, uni)).toBe(
+		'1. ↶ Undo rewind to "fix it" · a.ts, b.ts · 2 min ago',
+	);
+	expect(
+		r.rewindRow(1, { ...point, undo: { ...undo, kind: "redo" } }, now, ascii),
+	).toBe('1. Redo rewind to "fix it" - a.ts, b.ts - 2 min ago');
 });

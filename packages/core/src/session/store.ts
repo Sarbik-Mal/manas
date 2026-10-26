@@ -40,7 +40,10 @@ type Line =
 	| { kind: "set"; model?: string; effort?: string | null }
 	| { kind: "usage"; turn_id: string; usage: Usage }
 	// What the model read (2.1): path, hash and time, never content.
-	| { kind: "read"; read: Read };
+	| { kind: "read"; read: Read }
+	// A conversation rewind (2.6): history is cut back to `items` items, and
+	// the reads before this line no longer count.
+	| { kind: "rewind"; items: number };
 
 export const CUT_OFF =
 	"cut off: Manas ended before this finished. Check whether it took effect before running it again.";
@@ -91,6 +94,9 @@ export function openStore(
 		read(read: Read) {
 			if (exists) write({ kind: "read", read });
 		},
+		rewind(items: number) {
+			if (exists) write({ kind: "rewind", items });
+		},
 	};
 }
 export type Store = ReturnType<typeof openStore>;
@@ -126,6 +132,10 @@ export function loadSession(file: string): Loaded {
 	for (const l of lines) {
 		if (l.kind === "item") items.push(l.item);
 		if (l.kind === "read") reads.push(l.read);
+		if (l.kind === "rewind") {
+			items.length = Math.min(items.length, l.items);
+			reads.length = 0;
+		}
 		if (l.kind === "set") {
 			model = l.model ?? model;
 			if (l.effort !== undefined) effort = l.effort;

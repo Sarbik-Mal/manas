@@ -92,6 +92,20 @@ export const Requests = {
 	"session/set_effort": Type.Object({
 		effort: Type.Union([Type.String(), Type.Null()]),
 	}),
+	// The points /rewind can go back to, oldest first (2.6).
+	"checkpoints/list": Type.Object({}),
+	// What restoring the code of a checkpoint would change, before doing it.
+	"checkpoints/preview": Type.Object({ checkpoint_id: Type.String() }),
+	// Back to before that checkpoint's prompt. A code rewind first saves the
+	// files as they are ("before rewind"), so it can be undone.
+	"session/rewind": Type.Object({
+		checkpoint_id: Type.String(),
+		scope: Type.Union([
+			Type.Literal("code"),
+			Type.Literal("conversation"),
+			Type.Literal("both"),
+		]),
+	}),
 };
 const ModelState = Type.Object({
 	model: Type.String(),
@@ -118,6 +132,47 @@ export const Results = {
 	}),
 	"session/set_model": ModelState,
 	"session/set_effort": ModelState,
+	// Prompts, oldest first, then (only while it's the newest checkpoint) the
+	// undo or redo of the last code rewind: `prompt` null, `undo` saying which
+	// prompt that rewind went back to and which files it changes back.
+	"checkpoints/list": Type.Object({
+		checkpoints: Type.Array(
+			Type.Object({
+				checkpoint_id: Type.String(),
+				prompt: Nullable(Type.String()),
+				time: Type.String(),
+				undo: Nullable(
+					Type.Object({
+						kind: Type.Union([Type.Literal("undo"), Type.Literal("redo")]),
+						prompt: Type.String(),
+						paths: Type.Array(Type.String()),
+					}),
+				),
+			}),
+		),
+	}),
+	"checkpoints/preview": Type.Object({
+		files: Type.Array(
+			Type.Object({
+				path: Type.String(),
+				action: Type.Union([
+					Type.Literal("restore"),
+					Type.Literal("delete"),
+					Type.Literal("recreate"),
+				]),
+				added: Type.Integer(),
+				removed: Type.Integer(),
+			}),
+		),
+	}),
+	// `prompt`: the rewound prompt, for the input box (conversation rewinds).
+	"session/rewind": Type.Object({
+		prompt: Nullable(Type.String()),
+		restored: Type.Array(Type.String()),
+		failed: Type.Array(
+			Type.Object({ path: Type.String(), error: Type.String() }),
+		),
+	}),
 };
 
 export const Usage = Type.Object({

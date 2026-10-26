@@ -22,6 +22,7 @@ type Response = {
 const ESC = "\x1b";
 const CTRL_C = "\x03";
 const QUIT_WINDOW_MS = 2000;
+const DOUBLE_ESC_MS = 600;
 
 // The plain text chat (build-order 1.4). It is itself a protocol client: it
 // talks to the core only through protocol lines, over an in-process channel.
@@ -192,7 +193,9 @@ export async function runCli({
 	// One prompt; `\` at the end of a line continues it. null: quit.
 	// ponytail: Ctrl+J can't add a new line, since readline treats it as
 	// Enter; the Ink screen (M10) brings it.
-	const readPrompt = () =>
+	// `prefill`: text already in the input, e.g. a prompt /rewind took back.
+	// Esc twice on an empty input opens /rewind, as in Claude Code.
+	const readPrompt = (prefill = "") =>
 		new Promise<string | null>((resolve) => {
 			const rl: Interface = createInterface({
 				input,
@@ -204,8 +207,20 @@ export async function runCli({
 			});
 			const parts: string[] = [];
 			let done = false;
+			let lastEsc = 0;
+			const onPress = (_: string, key?: { name?: string }) => {
+				if (key?.name !== "escape" || rl.line || parts.length > 0) return;
+				const now = Date.now();
+				if (now - lastEsc < DOUBLE_ESC_MS) {
+					write("\n");
+					finish("/rewind");
+				}
+				lastEsc = now;
+			};
+			input.on("keypress", onPress);
 			const finish = (value: string | null) => {
 				done = true;
+				input.off("keypress", onPress);
 				history = (rl as unknown as { history: string[] }).history;
 				rl.close();
 				resolve(value);
@@ -239,12 +254,14 @@ export async function runCli({
 			rl.on("close", () => {
 				if (!done) {
 					done = true;
+					input.off("keypress", onPress);
 					write("\n");
 					resolve(null);
 				}
 			});
 			rl.setPrompt("> ");
 			rl.prompt();
+			if (prefill) rl.write(prefill);
 		});
 
 	// --- Running a prompt ---
@@ -368,6 +385,62 @@ export async function runCli({
 			: undefined;
 	};
 
+	// /rewind: pick a prompt, see what the code restore would change, pick an
+	// action. Returns the prompt to put back in the input, if the
+	// conversation was rewound.
+	// ponytail: no Summarize options until compaction, and the old messages
+	// stay on screen after a conversation rewind until the Ink screen (M10).
+	const rewind = async (): Promise<string | undefined> => {
+		const listed = await request("checkpoints/list");
+		const points = ((listed.result?.checkpoints ?? []) as r.Point[])
+			.slice(-20)
+			.reverse();
+		if (points.length === 0) {
+			say("Nothing to rewind to yet.");
+			return undefined;
+		}
+		const now = Date.now();
+		say(points.map((p, i) => r.rewindRow(i + 1, p, now, style)).join("\n"));
+		const n = Number(await ask("Rewind to before which? (Enter to cancel): "));
+		const point = Number.isInteger(n) ? points[n - 1] : undefined;
+		if (!point) return undefined;
+		const id = point.checkpoint_id;
+		const files = ((await request("checkpoints/preview", { checkpoint_id: id }))
+			.result?.files ?? []) as r.Change[];
+		say(r.preview(files, style));
+		// The code options only when there's code to restore (Claude Code's
+		// rule); a "before rewind" point has no conversation of its own.
+		const chat = point.prompt !== null;
+		const actions = [
+			...(chat && files.length > 0
+				? [["both", "Restore code and conversation"]]
+				: []),
+			...(chat ? [["conversation", "Restore conversation"]] : []),
+			...(files.length > 0 ? [["code", "Restore code"]] : []),
+		];
+		if (actions.length === 0) {
+			say(r.dim("Nothing to restore there.", style));
+			return undefined;
+		}
+		actions.push(["cancel", "Never mind"]);
+		say(actions.map(([, label], i) => `  ${i + 1}. ${label}`).join("\n"));
+		const a = Number(await ask(`Choose 1-${actions.length}: `));
+		const scope = Number.isInteger(a) ? actions[a - 1]?.[0] : undefined;
+		if (!scope || scope === "cancel") return undefined;
+		const res = await request("session/rewind", { checkpoint_id: id, scope });
+		if (!res.ok) {
+			say(r.red(res.error?.message ?? "error", style));
+			return undefined;
+		}
+		const result = res.result as {
+			prompt: string | null;
+			restored: string[];
+			failed: { path: string; error: string }[];
+		};
+		say(r.rewound(scope, result, style));
+		return scope === "code" ? undefined : (result.prompt ?? undefined);
+	};
+
 	const showChoice = (name: string, current: string, choices: string[]) =>
 		say(
 			`${name}: ${current} ${r.dim(`(choices: ${choices.join(", ")})`, style)}`,
@@ -406,8 +479,10 @@ export async function runCli({
 		say(`> ${firstPrompt}`);
 		await runPrompt(firstPrompt);
 	}
+	let prefill: string | undefined;
 	while (!quitting) {
-		const line = await readPrompt();
+		const line = await readPrompt(prefill);
+		prefill = undefined;
 		if (line === null) break;
 		if (!line.trim()) continue;
 		const cmd = parseCommand(line);
@@ -445,6 +520,9 @@ export async function runCli({
 				say(r.header({ version, model, effort, cwd }, style));
 				break;
 			}
+			case "rewind":
+				prefill = await rewind();
+				break;
 			case "doctor": {
 				const { lines } = await doctor();
 				say(lines.join("\n"));

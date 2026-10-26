@@ -47,6 +47,8 @@ export function readRecord(saved: Read[] = [], save?: (r: Read) => void) {
 			reads.set(read.path, read);
 			save?.(read);
 		},
+		// A conversation rewind: the model no longer has those reads in view.
+		clear: () => reads.clear(),
 	};
 }
 export type ReadRecord = ReturnType<typeof readRecord>;

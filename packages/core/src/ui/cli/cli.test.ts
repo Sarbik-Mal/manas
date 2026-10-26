@@ -1,8 +1,10 @@
 import { afterAll, beforeEach, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import Type from "typebox";
 import { call, fakeOpenAI, say, tempRoot } from "../../testing/fake-openai";
+import { coreTools } from "../../tools";
 import { defineTool } from "../../tools/registry";
 import { runCli, sessionsText } from "./cli";
 import { historyFile } from "./prompt-history";
@@ -20,9 +22,11 @@ function startCli({
 	root = tempRoot(),
 	resume,
 	tools,
+	cwd = "E:\\x",
 }: {
 	firstPrompt?: string;
 	root?: string;
+	cwd?: string;
 	resume?: Parameters<typeof runCli>[0]["resume"];
 	tools?: Parameters<typeof runCli>[0]["tools"];
 } = {}) {
@@ -35,7 +39,7 @@ function startCli({
 	const exited = runCli({
 		input,
 		output,
-		cwd: "E:\\x",
+		cwd,
 		firstPrompt,
 		style: { unicode: true, color: false },
 		root,
@@ -96,8 +100,8 @@ test("`\\` + Enter continues the prompt on a new line", async () => {
 
 test("an unknown command is never sent to the model", async () => {
 	const cli = startCli();
-	await cli.type("/rewind\r");
-	await cli.shows("Unknown command /rewind. Type /help.");
+	await cli.type("/plan\r");
+	await cli.shows("Unknown command /plan. Type /help.");
 	expect(bodies).toHaveLength(0);
 	await cli.type("/exit\r");
 	await cli.exited;
@@ -354,4 +358,43 @@ test("prompt history survives a restart, encrypted on disk", async () => {
 	expect(b.userTexts(bodies.length - 1)).toEqual(["remember token-xyz-123"]);
 	await b.type("/exit\r");
 	await b.exited;
+});
+
+test("/rewind: pick a prompt, see the change, restore code and conversation", async () => {
+	const project = tempRoot();
+	const file = join(project, "a.ts");
+	writeFileSync(file, "let x = 1;\n");
+	const cli = startCli({ cwd: project, tools: coreTools() });
+	replies.push(
+		{ items: [call("read", { file_path: "a.ts", offset: null, limit: null })] },
+		{
+			items: [
+				call("edit", {
+					file_path: "a.ts",
+					old_string: "x = 1",
+					new_string: "x = 2",
+					replace_all: null,
+				}),
+			],
+		},
+		say("changed"),
+	);
+	await cli.type("bump x\r");
+	await cli.shows("Choose 1-3: ");
+	cli.input.write("1\r"); // approve the edit
+	await cli.shows("changed");
+	expect(readFileSync(file, "utf8")).toBe("let x = 2;\n");
+
+	await cli.type("/rewind\r");
+	await cli.shows("1. bump x");
+	cli.input.write("1\r");
+	await cli.shows("a.ts +1 -1");
+	await cli.shows("4. Never mind");
+	cli.input.write("1\r"); // code and conversation
+	await cli.shows("Conversation rewound. Restored 1 file.");
+	expect(readFileSync(file, "utf8")).toBe("let x = 1;\n");
+	// The prompt is back in the input, ready to edit or send again.
+	await cli.waitFor(() => cli.out().endsWith("bump x"));
+	cli.input.write("\x15/exit\r");
+	await cli.exited;
 });

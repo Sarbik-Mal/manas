@@ -135,6 +135,73 @@ export function pickerRow(n: number, s: Listed, now: number, st: Style) {
 	return `${n}. ${s.title}${dim(`${d}${ago(s.updated, now)}${d}${plural(s.messages)}`, st)}`;
 }
 
+// --- /rewind ---
+
+export type Point = {
+	checkpoint_id: string;
+	prompt: string | null;
+	time: string;
+	undo: { kind: "undo" | "redo"; prompt: string; paths: string[] } | null;
+};
+export type Change = {
+	path: string;
+	action: "restore" | "delete" | "recreate";
+	added: number;
+	removed: number;
+};
+
+// `2. Fix the login bug · 5 min ago`, or for the last code rewind:
+// `1. ↶ Undo rewind to "Fix the login bug" · a.ts, b.ts · just now`.
+export function rewindRow(n: number, p: Point, now: number, st: Style) {
+	const d = ` ${sym(st).dot} `;
+	if (p.undo) {
+		const [arrow, verb] =
+			p.undo.kind === "undo" ? ["↶ ", "Undo"] : ["↷ ", "Redo"];
+		const what = `${st.unicode ? arrow : ""}${verb} rewind to "${firstLine(p.undo.prompt)}"`;
+		return `${n}. ${what}${dim(`${d}${p.undo.paths.join(", ")}${d}${ago(p.time, now)}`, st)}`;
+	}
+	return `${n}. ${firstLine(p.prompt ?? "")}${dim(`${d}${ago(p.time, now)}`, st)}`;
+}
+const firstLine = (s: string) => {
+	const line = s.trim().split("\n")[0];
+	return line.length > 60 ? `${line.slice(0, 60)}…` : line;
+};
+
+// What restoring the code would change: `  a.ts +3 -1`, `  b.ts (deleted)`.
+export function preview(files: Change[], st: Style) {
+	if (files.length === 0) return dim("  No code changes since then.", st);
+	return files
+		.map((f) => {
+			const what =
+				f.action === "delete"
+					? red("(deleted)", st)
+					: f.action === "recreate"
+						? green("(brought back)", st)
+						: `${green(`+${f.added}`, st)} ${red(`-${f.removed}`, st)}`;
+			return `  ${f.path} ${what}`;
+		})
+		.join("\n");
+}
+
+// The result of a rewind, failures in red.
+export function rewound(
+	scope: string,
+	r: { restored: string[]; failed: { path: string; error: string }[] },
+	st: Style,
+) {
+	const n = r.restored.length;
+	const parts = [
+		...(scope !== "code" ? ["Conversation rewound."] : []),
+		...(scope !== "conversation"
+			? [`Restored ${n} file${n === 1 ? "" : "s"}.`]
+			: []),
+	];
+	const failed = r.failed.map((f) =>
+		red(`Couldn't restore ${f.path}: ${f.error}`, st),
+	);
+	return [parts.join(" "), ...failed].join("\n");
+}
+
 // `manas sessions`: the id first, for `--resume <id>`.
 export function sessionLine(s: Listed, now: number, st: Style) {
 	const d = ` ${sym(st).dot} `;

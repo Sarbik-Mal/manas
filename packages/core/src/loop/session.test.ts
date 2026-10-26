@@ -1,6 +1,9 @@
 import { afterAll, beforeEach, expect, test } from "bun:test";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { ResponseInputItem } from "openai/resources/responses/responses";
 import Type from "typebox";
+import { Vault } from "../safety/scrub";
 import { CUT_OFF } from "../session/store";
 import {
 	call,
@@ -10,7 +13,10 @@ import {
 	tempRoot,
 } from "../testing/fake-openai";
 import { type Backups, openBackups } from "../tools/backups";
-import { buildRegistry, defineTool } from "../tools/registry";
+import { edit } from "../tools/edit";
+import { read } from "../tools/files";
+import { readRecord } from "../tools/reads";
+import { buildRegistry, defineTool, type Tool } from "../tools/registry";
 import { createSession, replayEvents, type SessionEvent } from "./session";
 
 const fake = fakeOpenAI();
@@ -285,6 +291,7 @@ test("with a store: items, usage and changes are saved", async () => {
 		set: (c: object) => saved.push(`set ${JSON.stringify(c)}`),
 		usage: (t: string) => saved.push(`usage ${t}`),
 		read: () => {},
+		rewind: () => {},
 	};
 	const events: SessionEvent[] = [];
 	const session = createSession({
@@ -359,4 +366,159 @@ test("the first message opens a new session; a new day appends a note; instructi
 	]);
 	// Neither shows when the chat is replayed on screen.
 	expect(JSON.stringify(replayEvents(r.history))).not.toContain("Today's date");
+});
+
+// --- 2.6: rewind ---
+
+function rewindable() {
+	const cwd = tempRoot();
+	writeFileSync(join(cwd, "a.ts"), "let x = 1;\n");
+	const backups = openBackups(tempRoot(), "s1");
+	const reads = readRecord();
+	const events: SessionEvent[] = [];
+	const session = createSession({
+		registry: buildRegistry([read, edit, gate] as Tool[]),
+		model: "gpt-5.6-luna",
+		emit: (e) => events.push(e),
+		backups,
+		toolCtx: {
+			cwd,
+			denied: () => undefined,
+			reads,
+			vault: new Vault(),
+			backups,
+		},
+	});
+	const idle = async (n: number) => {
+		for (let i = 0; i < 400; i++) {
+			if (events.filter((e) => e.type === "idle").length >= n) return;
+			await Bun.sleep(5);
+		}
+		throw new Error("never idle");
+	};
+	const file = () => readFileSync(join(cwd, "a.ts"), "utf8");
+	return { cwd, session, reads, idle, file };
+}
+const bump = (from: string, to: string) => [
+	{ items: [call("read", { file_path: "a.ts", offset: null, limit: null })] },
+	{
+		items: [
+			call("edit", {
+				file_path: "a.ts",
+				old_string: from,
+				new_string: to,
+				replace_all: null,
+			}),
+		],
+	},
+	say("done"),
+];
+
+test("rewind code: files back, a note for the model, and it can be undone", async () => {
+	const r = rewindable();
+	replies.push(...bump("x = 1", "x = 2"));
+	r.session.prompt("bump x");
+	await r.idle(1);
+	expect(r.file()).toBe("let x = 2;\n");
+	const [first] = r.session.checkpoints();
+	expect(first).toMatchObject({ prompt: "bump x", undo: null });
+	expect(await r.session.preview(first.id)).toEqual([
+		{ path: "a.ts", action: "restore", added: 1, removed: 1 },
+	]);
+
+	expect(await r.session.rewind(first.id, "code")).toEqual({
+		prompt: "bump x",
+		restored: ["a.ts"],
+		failed: [],
+	});
+	expect(r.file()).toBe("let x = 1;\n");
+	expect(r.session.history.at(-1)).toEqual({
+		role: "developer",
+		content:
+			'The user restored a.ts to how they were before the prompt "bump x". Read them again before changing them.',
+	});
+	// The conversation stays; one entry undoes the rewind, and using it turns
+	// it into a redo, so the list never grows.
+	const undo = r.session.checkpoints().at(-1);
+	expect(undo).toMatchObject({
+		prompt: null,
+		undo: { kind: "undo", prompt: "bump x", paths: ["a.ts"] },
+	});
+	await expect(
+		r.session.rewind(undo?.id as string, "conversation"),
+	).rejects.toThrow("has only code to restore");
+	await r.session.rewind(undo?.id as string, "code");
+	expect(r.file()).toBe("let x = 2;\n");
+	expect(r.session.history.at(-1)).toMatchObject({
+		content: expect.stringContaining(
+			'to how they were before rewinding to the prompt "bump x"',
+		),
+	});
+	const points = r.session.checkpoints();
+	expect(points.map((c) => c.prompt ?? c.undo?.kind)).toEqual([
+		"bump x",
+		"redo",
+	]);
+	await r.session.rewind(points[1].id, "code");
+	expect(r.file()).toBe("let x = 1;\n");
+	expect(r.session.checkpoints().at(-1)?.undo?.kind).toBe("undo");
+	// After a new prompt, undoing an old rewind would also wipe that work, so
+	// the entry goes.
+	replies.push(say("ok"));
+	r.session.prompt("next");
+	await r.idle(2);
+	expect(r.session.checkpoints().map((c) => c.prompt ?? c.undo?.kind)).toEqual([
+		"bump x",
+		"next",
+	]);
+});
+
+test("rewind both: history cut back, reads cleared, the prompt handed back", async () => {
+	const r = rewindable();
+	replies.push(...bump("x = 1", "x = 2"), ...bump("x = 2", "x = 3"));
+	r.session.prompt("first");
+	await r.idle(1);
+	r.session.prompt("second");
+	await r.idle(2);
+	const second = r.session.checkpoints()[1];
+	const kept = r.session.history.findIndex(
+		(i) => "role" in i && i.role === "user" && i.content === "second",
+	);
+	expect(await r.session.rewind(second.id, "both")).toMatchObject({
+		prompt: "second",
+		restored: ["a.ts"],
+	});
+	expect(r.file()).toBe("let x = 2;\n");
+	expect(r.session.history).toHaveLength(kept);
+	expect(r.reads.get(join(r.cwd, "a.ts"))).toBeUndefined();
+	// "second" is gone from the list; "first" and the undo stay.
+	expect(
+		r.session
+			.checkpoints()
+			.map((c) => c.prompt ?? `${c.undo?.kind} ${c.undo?.prompt}`),
+	).toEqual(["first", "undo second"]);
+});
+
+test("rewind conversation only keeps the code; a running turn can't be rewound", async () => {
+	const r = rewindable();
+	replies.push(...bump("x = 1", "x = 2"));
+	r.session.prompt("bump");
+	await r.idle(1);
+	const [c] = r.session.checkpoints();
+	expect(await r.session.rewind(c.id, "conversation")).toEqual({
+		prompt: "bump",
+		restored: [],
+		failed: [],
+	});
+	expect(r.file()).toBe("let x = 2;\n");
+	expect(r.session.history).toHaveLength(0);
+
+	replies.push({ items: [call("gate", {})] }, say("opened"));
+	r.session.prompt("wait");
+	for (let i = 0; i < 200 && !r.session.busy; i++) await Bun.sleep(5);
+	await expect(r.session.rewind(c.id, "code")).rejects.toThrow(
+		"stop the current turn first",
+	);
+	open();
+	await r.idle(2);
 });

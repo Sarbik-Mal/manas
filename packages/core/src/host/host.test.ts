@@ -828,3 +828,81 @@ test("an edit shows its diff with real values, and writes them to the file", asy
 		`const apiKey = "${key}";\nconst n = 1;\n`,
 	);
 });
+
+// --- 2.6: rewind through the protocol ---
+
+test("checkpoints/list, checkpoints/preview and session/rewind; errors for unknown or busy", async () => {
+	const project = tempRoot();
+	writeFileSync(join(project, "a.ts"), "let x = 1;\n");
+	const c = connect(undefined, { tools: coreTools() });
+	// preview and rewind answer once the files are read or written.
+	const ask = async (type: string, data: object = {}) => {
+		const from = c.out.length;
+		c.send(type, data);
+		await c.waitFor(() => c.out.slice(from).some((m) => m.kind === "response"));
+		return c.out.slice(from).find((m) => m.kind === "response") as Msg;
+	};
+	fake.replies.push(
+		{ items: [call("read", { file_path: "a.ts", offset: null, limit: null })] },
+		{
+			items: [
+				call("edit", {
+					file_path: "a.ts",
+					old_string: "x = 1",
+					new_string: "x = 2",
+					replace_all: null,
+				}),
+			],
+		},
+		say("done"),
+	);
+	await c.ready(project);
+	c.send("session/prompt", { text: "bump x" });
+	await c.waitFor(() => asked(c).length === 1);
+	answer(c, asked(c)[0].id, { decision: "allow" });
+	await c.waitFor(() => c.events("turn/finished").length === 1);
+
+	const list = await ask("checkpoints/list");
+	expect(list.result).toEqual({
+		checkpoints: [
+			{
+				checkpoint_id: "c1",
+				prompt: "bump x",
+				time: expect.any(String),
+				undo: null,
+			},
+		],
+	});
+	expect(
+		(await ask("checkpoints/preview", { checkpoint_id: "c1" })).result,
+	).toEqual({
+		files: [{ path: "a.ts", action: "restore", added: 1, removed: 1 }],
+	});
+	expect(await ask("checkpoints/preview", { checkpoint_id: "c9" })).toEqual(
+		error("not_found"),
+	);
+	expect(
+		(await ask("session/rewind", { checkpoint_id: "c1", scope: "both" }))
+			.result,
+	).toEqual({ prompt: "bump x", restored: ["a.ts"], failed: [] });
+	expect(readFileSync(join(project, "a.ts"), "utf8")).toBe("let x = 1;\n");
+
+	// A turn that waits on an approval is still running: rewind is refused.
+	fake.replies.push(
+		{ items: [call("write", { file_path: "b.ts", content: "b\n" })] },
+		say("ok"),
+	);
+	c.send("session/prompt", { text: "make b" });
+	await c.waitFor(() => asked(c).length === 2);
+	const before = (await ask("checkpoints/list")).result as {
+		checkpoints: { checkpoint_id: string }[];
+	};
+	expect(
+		await ask("session/rewind", {
+			checkpoint_id: before.checkpoints[0].checkpoint_id,
+			scope: "code",
+		}),
+	).toEqual(error("busy"));
+	answer(c, asked(c)[1].id, { decision: "deny", message: null });
+	await c.waitFor(() => c.events("turn/finished").length === 2);
+});

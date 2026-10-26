@@ -143,3 +143,30 @@ test("find: this project first, then every project; odd ids never touch the disk
 	expect(findSession("nope", "E:\\p", root)).toBeUndefined();
 	expect(findSession("..\\..\\x", "E:\\p", root)).toBeUndefined();
 });
+
+test("a rewind line cuts the history back and drops the reads before it", () => {
+	const file = sessionFile(projectDir("E:p", tempRoot()), "s9");
+	const store = openStore(file, start);
+	const read = {
+		path: "e:pa.ts",
+		hash: "h",
+		mtime: 1,
+		offset: null,
+		limit: null,
+		partial: false,
+	};
+	store.item({ role: "user", content: "one" });
+	store.read(read);
+	store.item({ role: "assistant", content: "1" });
+	store.item({ role: "user", content: "two" });
+	store.rewind(2);
+	store.item({ role: "user", content: "two again" });
+	store.read({ ...read, hash: "h2" });
+	const loaded = loadSession(file);
+	expect(loaded.items).toEqual([
+		{ role: "user", content: "one" },
+		{ role: "assistant", content: "1" },
+		{ role: "user", content: "two again" },
+	]);
+	expect(loaded.reads).toEqual([{ ...read, hash: "h2" }]);
+});

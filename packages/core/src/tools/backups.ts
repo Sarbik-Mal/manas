@@ -8,8 +8,16 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { diffLines } from "diff";
 import { fileKey, sha256 } from "./reads";
-import { readBytes, statOf } from "./textfile";
+import {
+	decodeText,
+	io,
+	readBytes,
+	retry,
+	statOf,
+	writeVerified,
+} from "./textfile";
 
 // Backups and checkpoints (memory-management.md), Claude Code's model:
 // - a checkpoint when each turn starts: every file this session has changed,
@@ -28,10 +36,33 @@ export type Checkpoint = {
 	time: string;
 	// Path → blob hash, or null for "didn't exist".
 	files: Record<string, string | null>;
+	// Not a prompt: the files as they were just before a code rewind, so it
+	// can be undone. Using an undo point saves a redo point, and back.
+	undo?: Undo;
+	// Its prompt was rewound away (a conversation rewind): no longer listed,
+	// but still used to find a later-touched file's earliest state.
+	cut?: boolean;
+};
+export type Undo = {
+	kind: "undo" | "redo";
+	// The prompt the rewind went back to (as history holds it, placeholders).
+	prompt: string;
+	// The files it changes back, as the user sees their paths.
+	paths: string[];
+};
+// What a rewind to a checkpoint would do to one file.
+export type Change = {
+	path: string;
+	// The blob it goes back to; null: it didn't exist, so it's deleted.
+	blob: string | null;
+	action: "restore" | "delete" | "recreate";
+	added: number;
+	removed: number;
 };
 type Line =
 	| ({ kind: "checkpoint" } & Checkpoint)
-	| { kind: "file"; checkpoint: string; path: string; blob: string | null };
+	| { kind: "file"; checkpoint: string; path: string; blob: string | null }
+	| { kind: "cut"; from: string };
 
 const KEEP = 100; // Claude Code's
 
@@ -59,6 +90,8 @@ export function openBackups(root: string, sessionId: string) {
 			const { kind: _, ...c } = line;
 			checkpoints.push(c);
 			for (const p of Object.keys(c.files)) track(p);
+		} else if (line.kind === "cut") {
+			cutFrom(line.from);
 		} else {
 			const c = checkpoints.find((x) => x.id === line.checkpoint);
 			if (c) c.files[line.path] = line.blob;
@@ -66,6 +99,60 @@ export function openBackups(root: string, sessionId: string) {
 		}
 	}
 	let last = Math.max(0, ...checkpoints.map((c) => Number(c.id.slice(1))));
+
+	function cutFrom(id: string) {
+		const at = checkpoints.findIndex((c) => c.id === id);
+		if (at >= 0) for (const c of checkpoints.slice(at)) c.cut = true;
+	}
+	// What restoring `id` puts back: each file as that checkpoint has it, or,
+	// for one first touched later, its earliest recorded state (Claude Code's
+	// rule; a null one is deleted).
+	function target(id: string) {
+		const at = checkpoints.findIndex((c) => c.id === id);
+		if (at < 0) return undefined;
+		const out = new Map<string, string | null>();
+		for (const c of checkpoints.slice(at))
+			for (const [path, blob] of Object.entries(c.files))
+				if (!out.has(path)) out.set(path, blob);
+		return out;
+	}
+	// The files a rewind to `id` would change, with line counts.
+	async function changes(id: string): Promise<Change[] | undefined> {
+		const t = target(id);
+		if (!t) return undefined;
+		const out: Change[] = [];
+		for (const [path, blob] of t) {
+			const info = statOf(path);
+			let now: Uint8Array | null = null;
+			try {
+				if (info && !info.isDirectory()) now = await readBytes(path, path);
+			} catch {
+				// Can't read it (locked): listed, so restoring it fails on its own.
+				const action = blob === null ? "delete" : "restore";
+				out.push({ path, blob, action, added: 0, removed: 0 });
+				continue;
+			}
+			if ((now && sha256(now)) === blob) continue;
+			const then = blob === null ? null : readBlob(blob);
+			let added = 0;
+			let removed = 0;
+			for (const part of diffLines(textOf(now), textOf(then))) {
+				if (part.added) added += part.count ?? 0;
+				if (part.removed) removed += part.count ?? 0;
+			}
+			const action =
+				blob === null ? "delete" : now === null ? "recreate" : "restore";
+			out.push({ path, blob, action, added, removed });
+		}
+		return out;
+	}
+	const readBlob = (hash: string) => {
+		try {
+			return readFileSync(join(blobs, hash));
+		} catch {
+			return null; // cleaned up: restoring this file fails
+		}
+	};
 
 	const append = (line: Line) => {
 		mkdirSync(dirname(file), { recursive: true });
@@ -96,7 +183,7 @@ export function openBackups(root: string, sessionId: string) {
 
 	return {
 		// When a turn starts, before its prompt joins history.
-		async checkpoint(items: number) {
+		async checkpoint(items: number, undo?: Undo) {
 			const files: Checkpoint["files"] = {};
 			for (const path of tracked.values()) files[path] = await current(path);
 			const c = {
@@ -104,6 +191,7 @@ export function openBackups(root: string, sessionId: string) {
 				items,
 				time: new Date().toISOString(),
 				files,
+				...(undo && { undo }),
 			};
 			checkpoints.push(c);
 			append({ kind: "checkpoint", ...c });
@@ -134,9 +222,43 @@ export function openBackups(root: string, sessionId: string) {
 		},
 		list: (): readonly Checkpoint[] => checkpoints,
 		blobPath: (hash: string) => join(blobs, hash),
+		preview: changes,
+		// Puts every changed file back, byte for byte; a file that fails (locked,
+		// backup gone) doesn't stop the rest.
+		async restore(id: string) {
+			const restored: string[] = [];
+			const failed: { path: string; error: string }[] = [];
+			for (const c of (await changes(id)) ?? []) {
+				try {
+					if (c.blob === null) {
+						await retry(c.path, () => rmSync(io(c.path), { force: true }));
+					} else {
+						const bytes = readBlob(c.blob);
+						if (!bytes) throw new Error("its backup is gone");
+						await writeVerified(c.path, bytes, c.path);
+					}
+					restored.push(c.path);
+				} catch (err) {
+					failed.push({ path: c.path, error: (err as Error).message });
+				}
+			}
+			return { restored, failed };
+		},
+		// A conversation rewind to `id`: it and later checkpoints leave the list.
+		cut(id: string) {
+			cutFrom(id);
+			append({ kind: "cut", from: id });
+		},
 	};
 }
 export type Backups = ReturnType<typeof openBackups>;
+
+// For line counts: the text, however it's encoded (lossy for unknown ones).
+function textOf(bytes: Uint8Array | null) {
+	if (!bytes) return "";
+	const t = decodeText(bytes);
+	return typeof t === "string" ? new TextDecoder().decode(bytes) : t.text;
+}
 
 // For contexts with nothing to undo (tests, a bare runTurn).
 export const NO_BACKUPS: Backups = {
@@ -144,4 +266,7 @@ export const NO_BACKUPS: Backups = {
 	before: () => {},
 	list: () => [],
 	blobPath: (hash) => hash,
+	preview: async () => undefined,
+	restore: async () => ({ restored: [], failed: [] }),
+	cut: () => {},
 };

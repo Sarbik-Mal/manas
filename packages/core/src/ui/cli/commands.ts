@@ -1,11 +1,11 @@
 // Slash commands of the plain CLI. Anything else starting with "/" is
 // unknown, and never sent to the model.
 export type Command =
-	| { name: "help" | "exit" | "clear" | "doctor" | "resume" }
+	| { name: "help" | "exit" | "clear" | "doctor" | "resume" | "rewind" }
 	| { name: "model" | "effort"; arg?: string }
 	| { name: "unknown"; text: string };
 
-const SIMPLE = new Set(["help", "exit", "clear", "doctor", "resume"]);
+const SIMPLE = new Set(["help", "exit", "clear", "doctor", "resume", "rewind"]);
 
 // undefined: the line is a prompt, not a command.
 export function parseCommand(line: string): Command | undefined {
@@ -22,6 +22,7 @@ export const HELP = `Keys
   \\ then Enter   new line
   Up / Down      earlier prompts (this run)
   Esc            stop the current reply (work so far is kept)
+  Esc Esc        rewind (on an empty input)
   Ctrl+C         clear the input, or stop the reply; twice to quit
   Ctrl+D         quit (on an empty input)
 
@@ -30,6 +31,7 @@ Commands
   /effort [level]   show or switch the reasoning effort ("default" resets it)
   /clear            start a new conversation
   /resume           pick a saved conversation to continue
+  /rewind           go back to an earlier prompt: code, conversation or both
   /doctor           check the setup
   /help             this help
   /exit             quit`;

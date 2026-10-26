@@ -202,86 +202,124 @@ export function createHost(
 		}
 	};
 
-	const handlers: { [T in RequestType]: (data: RequestData<T>) => Result<T> } =
-		{
-			initialize() {
-				initialized = true;
-				return { protocol_version: PROTOCOL_VERSION, capabilities: [] };
-			},
-			"session/new"({ cwd, model, effort }) {
-				noSession();
-				// The request wins, then settings. A bad value from settings is
-				// dropped with a warning; a bad one in the request is an error.
-				const from = settings.current.settings;
-				const warnings: string[] = [];
-				const valid = (m: string, e?: string) => {
-					try {
-						checkEffort(m, e);
-						return true;
-					} catch (err) {
-						warnings.push(`settings: ${(err as Error).message} (ignored)`);
-						return false;
-					}
-				};
-				let m = model ?? DEFAULT_MODEL;
-				if (!model && from.models?.main && valid(from.models.main)) {
-					m = from.models.main;
-				}
-				let eff = effort ?? undefined;
-				if (effort == null && from.effort && valid(m, from.effort)) {
-					eff = from.effort;
-				}
-				invalidParams(() => checkEffort(m, eff));
-				const id = crypto.randomUUID();
-				open(
-					id,
-					sessionFile(projectDir(cwd, root), id),
-					cwd,
-					m,
-					eff,
-					undefined,
-					warnings,
-				);
-				return { session_id: id };
-			},
-			"session/resume"({ session_id, cwd }) {
-				noSession();
-				const file = findSession(session_id, cwd, root);
-				let loaded: Loaded | undefined;
+	const handlers: {
+		[T in RequestType]: (
+			data: RequestData<T>,
+		) => Result<T> | Promise<Result<T>>;
+	} = {
+		initialize() {
+			initialized = true;
+			return { protocol_version: PROTOCOL_VERSION, capabilities: [] };
+		},
+		"session/new"({ cwd, model, effort }) {
+			noSession();
+			// The request wins, then settings. A bad value from settings is
+			// dropped with a warning; a bad one in the request is an error.
+			const from = settings.current.settings;
+			const warnings: string[] = [];
+			const valid = (m: string, e?: string) => {
 				try {
-					if (file) loaded = loadSession(file);
-				} catch {}
-				if (!file || !loaded) {
-					throw new ProtocolError(
-						"not_found",
-						`No session found with id ${session_id}`,
-					);
+					checkEffort(m, e);
+					return true;
+				} catch (err) {
+					warnings.push(`settings: ${(err as Error).message} (ignored)`);
+					return false;
 				}
-				const { model: m, effort: eff } = loaded;
-				invalidParams(() => checkEffort(m, eff ?? undefined));
-				open(session_id, file, loaded.start.cwd, m, eff ?? undefined, loaded);
-				return { session_id };
-			},
-			"sessions/list"({ cwd }) {
-				return { sessions: listSessions(projectDir(cwd, root)) };
-			},
-			"session/prompt"({ text, priority }) {
-				return { prompt_id: need().prompt(text, priority ?? "next") };
-			},
-			"session/interrupt"({ cancel_queued }) {
-				return { still_queued: need().interrupt(cancel_queued ?? false) };
-			},
-			"session/set_model"({ model }) {
-				const s = need();
-				invalidParams(() => s.setModel(model));
-				return { model: s.model, effort: s.effort ?? null };
-			},
-			"session/set_effort"({ effort }) {
-				const s = need();
-				invalidParams(() => s.setEffort(effort ?? undefined));
-				return { model: s.model, effort: s.effort ?? null };
-			},
-		};
+			};
+			let m = model ?? DEFAULT_MODEL;
+			if (!model && from.models?.main && valid(from.models.main)) {
+				m = from.models.main;
+			}
+			let eff = effort ?? undefined;
+			if (effort == null && from.effort && valid(m, from.effort)) {
+				eff = from.effort;
+			}
+			invalidParams(() => checkEffort(m, eff));
+			const id = crypto.randomUUID();
+			open(
+				id,
+				sessionFile(projectDir(cwd, root), id),
+				cwd,
+				m,
+				eff,
+				undefined,
+				warnings,
+			);
+			return { session_id: id };
+		},
+		"session/resume"({ session_id, cwd }) {
+			noSession();
+			const file = findSession(session_id, cwd, root);
+			let loaded: Loaded | undefined;
+			try {
+				if (file) loaded = loadSession(file);
+			} catch {}
+			if (!file || !loaded) {
+				throw new ProtocolError(
+					"not_found",
+					`No session found with id ${session_id}`,
+				);
+			}
+			const { model: m, effort: eff } = loaded;
+			invalidParams(() => checkEffort(m, eff ?? undefined));
+			open(session_id, file, loaded.start.cwd, m, eff ?? undefined, loaded);
+			return { session_id };
+		},
+		"sessions/list"({ cwd }) {
+			return { sessions: listSessions(projectDir(cwd, root)) };
+		},
+		"session/prompt"({ text, priority }) {
+			return { prompt_id: need().prompt(text, priority ?? "next") };
+		},
+		"session/interrupt"({ cancel_queued }) {
+			return { still_queued: need().interrupt(cancel_queued ?? false) };
+		},
+		"session/set_model"({ model }) {
+			const s = need();
+			invalidParams(() => s.setModel(model));
+			return { model: s.model, effort: s.effort ?? null };
+		},
+		"session/set_effort"({ effort }) {
+			const s = need();
+			invalidParams(() => s.setEffort(effort ?? undefined));
+			return { model: s.model, effort: s.effort ?? null };
+		},
+		// Prompts carry placeholders in history; the screen gets real values.
+		"checkpoints/list"() {
+			return {
+				checkpoints: need()
+					.checkpoints()
+					.map((c) => ({
+						checkpoint_id: c.id,
+						prompt: c.prompt === null ? null : show(c.prompt),
+						time: c.time,
+						undo: c.undo && { ...c.undo, prompt: show(c.undo.prompt) },
+					})),
+			};
+		},
+		async "checkpoints/preview"({ checkpoint_id }) {
+			const s = need();
+			known(s, checkpoint_id);
+			return { files: await s.preview(checkpoint_id) };
+		},
+		async "session/rewind"({ checkpoint_id, scope }) {
+			const s = need();
+			if (s.busy)
+				throw new ProtocolError("busy", "stop the current turn first (Esc)");
+			known(s, checkpoint_id);
+			let r: Awaited<ReturnType<typeof s.rewind>>;
+			try {
+				r = await s.rewind(checkpoint_id, scope);
+			} catch (err) {
+				throw new ProtocolError("invalid_params", (err as Error).message);
+			}
+			return { ...r, prompt: r.prompt === null ? null : show(r.prompt) };
+		},
+	};
+	const known = (s: Session, id: string) => {
+		if (!s.checkpoints().some((c) => c.id === id))
+			throw new ProtocolError("not_found", `No checkpoint ${id}`);
+	};
 	const noSession = () => {
 		if (session) {
 			throw new ProtocolError(
@@ -479,7 +517,20 @@ export function createHost(
 				throw new ProtocolError("not_initialized", "send initialize first");
 			}
 			const handler = handlers[type] as (d: unknown) => unknown;
-			respond({ ok: true, result: handler(parse(type, msg)) });
+			const result = handler(parse(type, msg));
+			// /rewind's requests touch files, so they answer later.
+			if (result instanceof Promise) {
+				result.then(
+					(r) => respond({ ok: true, result: r }),
+					(err) => {
+						if (!(err instanceof ProtocolError)) throw err;
+						respond({
+							ok: false,
+							error: { code: err.code, message: err.message },
+						});
+					},
+				);
+			} else respond({ ok: true, result });
 		} catch (err) {
 			if (!(err instanceof ProtocolError)) throw err;
 			respond({ ok: false, error: { code: err.code, message: err.message } });
