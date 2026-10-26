@@ -220,3 +220,18 @@ test("saveRule refuses a file that doesn't parse and leaves it alone", () => {
 	expect(() => saveRule(file, "PowerShell(x *)")).toThrow(SettingsError);
 	expect(readFileSync(file, "utf8")).toBe('{ "permissions": ');
 });
+
+test("cleanupPeriodDays: only the user file sets it (the sweep covers every project)", () => {
+	const { load, cwd } = setup(
+		'{ "limits": { "cleanupPeriodDays": 10 } }',
+		'{ "limits": { "cleanupPeriodDays": 365, "parallelAgents": 2 } }',
+	);
+	const loaded = load();
+	expect(loaded.settings.limits).toEqual({
+		cleanupPeriodDays: 10,
+		parallelAgents: 2,
+	});
+	expect(loaded.warnings).toEqual([
+		`settings ${projectFile(cwd)}: limits.cleanupPeriodDays is ignored here; only your user settings set it, since the cleanup covers every project`,
+	]);
+});

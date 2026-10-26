@@ -18,6 +18,7 @@ import {
 	type Rule,
 	saveRule,
 } from "../config/settings";
+import { debugLog } from "../log/debug";
 import { firstMessage } from "../loop/prompt";
 import {
 	createSession,
@@ -37,6 +38,7 @@ import { checkEffort } from "../provider/models";
 import { preloadEnv } from "../safety/env-preload";
 import { restoreDeep, restoreStream, Vault } from "../safety/scrub";
 import { openVault, saveVault } from "../safety/vault-file";
+import { sweep } from "../session/cleanup";
 import {
 	DEFAULT_ROOT,
 	findSession,
@@ -81,6 +83,7 @@ export function createHost(
 		root = DEFAULT_ROOT,
 		settings = NO_SETTINGS,
 		tools = [],
+		cleanup,
 	}: {
 		// Where sessions are saved; tests use a temp folder.
 		root?: string;
@@ -88,6 +91,9 @@ export function createHost(
 		settings?: SettingsSource;
 		// Every tool the core has (`coreTools()`); tests bring their own.
 		tools?: Tool[];
+		// The 2.9 sweep of this folder (~/.manas) once a session opens; tests
+		// leave it out.
+		cleanup?: { dir: string };
 	} = {},
 ) {
 	let replaying = false;
@@ -522,6 +528,17 @@ export function createHost(
 		});
 		session = s;
 		sessionId = id;
+		// In the background and quiet, as Claude Code's; counts go to the
+		// debug log. The open session is never swept.
+		if (cleanup)
+			sweep({
+				dir: cleanup.dir,
+				days: settings.current.settings.limits?.cleanupPeriodDays ?? 30,
+				keep: id,
+			}).then(
+				(swept) => swept && debugLog({ kind: "cleanup", ...swept }),
+				() => {},
+			);
 		// The front end shows real values; the answers come back keyed and
 		// labelled as the model wrote them (with placeholders).
 		const ask = async (questions: Questions, callId: string) => {

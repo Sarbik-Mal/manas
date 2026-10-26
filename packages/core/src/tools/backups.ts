@@ -27,7 +27,7 @@ import {
 //   worst an extra backup.
 // Whole files, stored once per content hash and shared by the project's
 // sessions; the newest 100 checkpoints are kept. /rewind (2.6) reads them.
-// ponytail: blobs no checkpoint points to stay until the cleanup (2.9).
+// Blobs no checkpoint list names are deleted by the cleanup (2.9).
 
 export type Checkpoint = {
 	id: string;

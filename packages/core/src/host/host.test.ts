@@ -4,6 +4,7 @@ import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -1260,4 +1261,35 @@ test("a bad answer counts as declined; an interrupt withdraws the question", asy
 		id: questionsAsked(c)[1].id,
 		reason: "interrupted",
 	});
+});
+
+// --- 2.9: cleanup ---
+
+test("with cleanup, the sweep runs once a session opens and never takes that session", async () => {
+	const dir = tempRoot();
+	const root = join(dir, "projects");
+	const project = tempRoot();
+	const a = connect(root);
+	fake.replies.push(say("ok"));
+	await a.ready(project);
+	a.send("session/prompt", { text: "hi" });
+	await a.waitFor(() => a.events("turn/finished").length === 1);
+	const id = a.events("session/started")[0].session_id as string;
+	a.host.close();
+	const file = findSession(id, project, root) as string;
+	const other = join(dirname(file), "other.jsonl");
+	writeFileSync(other, "{}\n");
+	const old = (Date.now() - 40 * 86_400_000) / 1000;
+	utimesSync(file, old, old);
+	utimesSync(other, old, old);
+
+	const b = connect(root, { cleanup: { dir } });
+	b.send("initialize", {
+		client: { name: "t", version: "0" },
+		capabilities: [],
+	});
+	b.send("session/resume", { session_id: id, cwd: project });
+	await b.waitFor(() => !existsSync(other));
+	expect(existsSync(file)).toBe(true);
+	expect(existsSync(join(dir, ".last-cleanup"))).toBe(true);
 });

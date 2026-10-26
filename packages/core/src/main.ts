@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { version } from "../package.json";
 import { liveSettings, loadSettings } from "./config/settings";
@@ -82,6 +84,7 @@ try {
 			style: detectStyle(process.env),
 			tools: coreTools(),
 			mode: values.mode,
+			cleanup: { dir: join(homedir(), ".manas") },
 			resume: pick
 				? "pick"
 				: values.resume
@@ -103,6 +106,7 @@ async function stdio(settings: SettingsSource) {
 	const host = createHost((line) => process.stdout.write(`${line}\n`), {
 		settings,
 		tools: coreTools(),
+		cleanup: { dir: join(homedir(), ".manas") },
 	});
 	for await (const line of console) if (line.trim()) host.receive(line);
 	host.close();

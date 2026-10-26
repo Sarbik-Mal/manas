@@ -165,7 +165,15 @@ export function loadSettings({
 	if (guard) warnings.push(guard);
 	else {
 		files.push(projectFile(cwd));
-		layers.push(readLayer(projectFile(cwd), warnings));
+		const project = readLayer(projectFile(cwd), warnings);
+		// The cleanup covers every project, so one value: the user's.
+		if (project.limits?.cleanupPeriodDays !== undefined) {
+			warnings.push(
+				`settings ${projectFile(cwd)}: limits.cleanupPeriodDays is ignored here; only your user settings set it, since the cleanup covers every project`,
+			);
+			delete project.limits.cleanupPeriodDays;
+		}
+		layers.push(project);
 		bases.push(cwd);
 	}
 	const fromFlags: Settings = {};

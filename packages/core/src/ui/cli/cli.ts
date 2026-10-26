@@ -38,6 +38,7 @@ export async function runCli({
 	resume,
 	tools,
 	mode: startMode,
+	cleanup,
 }: {
 	input: In;
 	output: NodeJS.WritableStream;
@@ -54,6 +55,8 @@ export async function runCli({
 	tools?: Tool[];
 	// --mode: the starting mode (plain or display name).
 	mode?: string;
+	// The startup cleanup's folder (~/.manas); tests leave it out.
+	cleanup?: { dir: string };
 }): Promise<number> {
 	const write = (s: string) => output.write(s);
 	let atLineStart = true;
@@ -112,7 +115,7 @@ export async function runCli({
 		});
 	// A host with no session yet; sessions can be listed now.
 	const open = async () => {
-		host = createHost(onLine, { root, settings, tools });
+		host = createHost(onLine, { root, settings, tools, cleanup });
 		await request("initialize", {
 			client: { name: "manas-cli", version },
 			capabilities: ["user_ask"],
