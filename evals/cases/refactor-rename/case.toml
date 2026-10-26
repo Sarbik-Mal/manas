@@ -1,0 +1,42 @@
+# Milestone 2: a rename across files, leaving the look-alike alone.
+task = "Rename applyDiscount to discountTotal everywhere. Leave applyDiscountLegacy as it is."
+fixture = "ts-shop"
+mode = "acceptEdits"
+sets = ["full"]
+limits = { cost_usd = 0.05 }
+
+[[check]]
+type = "file"
+path = "src/discounts.ts"
+contains = "function discountTotal"
+
+[[check]]
+type = "file"
+path = "src/cart.ts"
+not_contains = "applyDiscount("
+
+[[check]]
+type = "file"
+path = "src/orders.ts"
+not_contains = "applyDiscount("
+
+[[check]]
+type = "file"
+path = "src/api/checkout.ts"
+not_contains = "applyDiscount("
+
+[[check]]
+type = "file"
+path = "src/discounts.ts"
+contains = "export function applyDiscountLegacy"
+
+[[check]]
+type = "file"
+path = "src/legacy/report.ts"
+contains = "applyDiscountLegacy"
+
+# A missing export fails the build.
+[[check]]
+type = "command"
+run = "bun build ./src/index.ts ./src/orders.ts ./src/api/checkout.ts ./src/legacy/report.ts --outdir .eval-build"
+expect = 0

@@ -1,0 +1,44 @@
+# Milestone 2: edits keep each file's line endings and encoding.
+task = """Three small changes:
+1. In src/legacy.ts, change the greeting "Hello" to "Hi".
+2. In notes/todo.txt, add a line "- milk" at the end of the list.
+3. In notes/readme.txt, change the status from draft to final."""
+fixture = "win-files"
+mode = "acceptEdits"
+sets = ["smoke", "full"]
+limits = { cost_usd = 0.05 }
+
+[convert]
+"src/legacy.ts" = "crlf"
+"notes/todo.txt" = "utf16le"
+"notes/readme.txt" = "utf8bom"
+
+[[check]]
+type = "eol"
+path = "src/legacy.ts"
+expect = "crlf"
+
+[[check]]
+type = "file"
+path = "src/legacy.ts"
+contains = "Hi, ${name}!"
+
+[[check]]
+type = "encoding"
+path = "notes/todo.txt"
+expect = "utf16le"
+
+[[check]]
+type = "file"
+path = "notes/todo.txt"
+contains = "- milk"
+
+[[check]]
+type = "encoding"
+path = "notes/readme.txt"
+expect = "utf8bom"
+
+[[check]]
+type = "file"
+path = "notes/readme.txt"
+contains = "Status: final"

@@ -1,0 +1,4 @@
+# The repo's own tests live in packages/; eval fixtures carry their own
+# tests (some failing on purpose), run only by the eval runner.
+[test]
+root = "packages"

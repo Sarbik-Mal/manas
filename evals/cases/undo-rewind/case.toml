@@ -1,0 +1,18 @@
+# Milestone 2: the fix is made, then a code rewind puts the file back
+# byte for byte.
+task = "The cart subtotal is wrong when a line has a quantity above 1. Fix it."
+fixture = "ts-bugs"
+mode = "acceptEdits"
+rewind = "code"
+sets = ["full"]
+limits = { cost_usd = 0.05 }
+
+[[check]]
+type = "unchanged"
+path = "src/cart.ts"
+
+# The bug is back.
+[[check]]
+type = "command"
+run = "bun test"
+expect = 1
