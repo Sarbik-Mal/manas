@@ -686,6 +686,7 @@ test("the real tools run in the session's folder, and a Read deny filters grep",
 	await c.ready(project);
 	expect(c.events("session/started")[0].tools).toEqual([
 		"read",
+		"edit",
 		"grep",
 		"glob",
 		"powershell",
@@ -784,4 +785,45 @@ test("verbosity: low by default or from settings, saved, and kept on resume", as
 	d.send("session/prompt", { text: "old" });
 	await d.waitFor(() => d.events("turn/finished").length === 1);
 	expect(fake.bodies[3]).not.toHaveProperty("text");
+});
+
+// --- 2.2: edit ---
+
+test("an edit shows its diff with real values, and writes them to the file", async () => {
+	const project = tempRoot();
+	const key = "sk-abcdefghijklmnopqrstuvwxyz123456";
+	writeFileSync(
+		join(project, "app.ts"),
+		`const key = "${key}";\nconst n = 1;\n`,
+	);
+	const c = connect(undefined, { tools: coreTools() });
+	fake.replies.push(
+		{
+			items: [call("read", { file_path: "app.ts", offset: null, limit: null })],
+		},
+		{
+			items: [
+				call("edit", {
+					file_path: "app.ts",
+					old_string: 'const key = "[REDACTED:api_key#1]";',
+					new_string: 'const apiKey = "[REDACTED:api_key#1]";',
+					replace_all: null,
+				}),
+			],
+		},
+		say("done"),
+	);
+	await c.ready(project);
+	c.send("session/prompt", { text: "rename key" });
+	await c.waitFor(() => asked(c).length === 1);
+	expect(asked(c)[0]).toMatchObject({
+		tool: "edit",
+		title: "edit app.ts",
+		diff: `line 1:\n- const key = "${key}";\n+ const apiKey = "${key}";`,
+	});
+	answer(c, asked(c)[0].id, { decision: "allow" });
+	await c.waitFor(() => c.events("turn/finished").length === 1);
+	expect(readFileSync(join(project, "app.ts"), "utf8")).toBe(
+		`const apiKey = "${key}";\nconst n = 1;\n`,
+	);
 });

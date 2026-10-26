@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { deniedPath } from "../permissions/engine";
+import { Vault } from "../safety/scrub";
 import { tempRoot } from "../testing/fake-openai";
 import { glob, grep, read } from "./files";
 import { readRecord } from "./reads";
@@ -26,6 +27,7 @@ function project(
 		cwd,
 		denied: (p) => deniedPath(p, rules, cwd),
 		reads: readRecord(),
+		vault: new Vault(),
 	};
 	return { cwd, ctx };
 }

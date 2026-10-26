@@ -3,6 +3,7 @@ import type {
 	ResponseInputItem,
 } from "openai/resources/responses/responses";
 import { streamResponse, type Usage } from "../provider/openai";
+import { Vault } from "../safety/scrub";
 import { readRecord } from "../tools/reads";
 import {
 	buildRegistry,
@@ -50,7 +51,12 @@ export async function* runTurn(
 		signal = new AbortController().signal,
 		inject = () => [],
 		permit,
-		ctx = { cwd: process.cwd(), denied: () => undefined, reads: readRecord() },
+		ctx = {
+			cwd: process.cwd(),
+			denied: () => undefined,
+			reads: readRecord(),
+			vault: new Vault(),
+		},
 		...opts
 	}: {
 		model?: string;

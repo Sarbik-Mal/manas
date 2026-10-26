@@ -1,6 +1,7 @@
 import type { Static, TSchema } from "typebox";
 import Value from "typebox/value";
 import type { ToolSpec } from "../provider/openai";
+import type { Vault } from "../safety/scrub";
 import type { ReadRecord } from "./reads";
 
 // What every tool gets. Grows as parts are built: session, ask, vault,
@@ -14,6 +15,8 @@ export type ToolCtx = {
 	denied: (path: string) => string | undefined;
 	// What the model has read (2.1), for edit and write's read-first rule.
 	reads: ReadRecord;
+	// The session's secrets: file writes put the real values back (2.2).
+	vault: Vault;
 };
 // What a session hands every call; `signal` is per turn.
 export type SessionCtx = Omit<ToolCtx, "signal">;
@@ -34,6 +37,8 @@ export type Tool<S extends TSchema = TSchema> = {
 	title?: (input: Static<S>) => string;
 	// Step 1, after the schema: why this input is refused, before any prompt.
 	validate?: (input: Static<S>, ctx: ToolCtx) => Promise<string | undefined>;
+	// The change the approval prompt shows, after validate (an edit's diff).
+	preview?: (input: Static<S>) => string | undefined;
 	run(input: Static<S>, ctx: ToolCtx): Promise<string>;
 };
 
@@ -49,6 +54,7 @@ export type Permit = (call: {
 	tool: Tool;
 	input: unknown;
 	callId: string;
+	diff?: string;
 }) => Promise<{ output: string; stop?: boolean } | undefined>;
 
 // Only types `run`'s input from the schema.
@@ -110,7 +116,12 @@ export async function callTool(
 		return error((err as Error).message);
 	}
 	// 2. Permission. Backup (3) joins in milestone 2.
-	const refused = await permit({ tool, input, callId });
+	const refused = await permit({
+		tool,
+		input,
+		callId,
+		diff: tool.preview?.(input),
+	});
 	if (refused) {
 		return {
 			status: "denied",

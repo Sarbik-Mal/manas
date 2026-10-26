@@ -353,8 +353,9 @@ export function createHost(
 				cwd,
 				denied: (path) => deniedPath(path, settings.current.rules, cwd),
 				reads: readRecord(loaded?.reads, (r) => store.read(r)),
+				vault: v,
 			},
-			permit: async ({ tool, input, callId }) => {
+			permit: async ({ tool, input, callId, diff }) => {
 				const d = await decide(tool, input, {
 					rules: settings.current.rules,
 					session: sessionRules,
@@ -369,6 +370,9 @@ export function createHost(
 						tool: tool.name,
 						input,
 						title: titleOf(tool, input),
+						// Holds real values (the edit restored them): the user's
+						// screen only, never the model.
+						diff: diff ?? null,
 						reason: d.reason,
 						suggestions: d.suggestions,
 					});

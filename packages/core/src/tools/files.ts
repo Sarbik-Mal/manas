@@ -93,7 +93,13 @@ export const read = defineTool({
 		// (Claude Code's wording), so it isn't sent twice.
 		const hash = sha256(bytes);
 		const seen = ctx.reads.get(path);
-		if (seen?.hash === hash && seen.offset === offset && seen.limit === limit) {
+		if (
+			seen &&
+			!seen.edited &&
+			seen.hash === hash &&
+			seen.offset === offset &&
+			seen.limit === limit
+		) {
 			return UNCHANGED;
 		}
 		const record = (partial: boolean) =>

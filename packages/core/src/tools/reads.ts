@@ -17,6 +17,9 @@ export type Read = {
 	limit: number | null;
 	// Cut off at the token limit (a PARTIAL view): doesn't count for edits.
 	partial: boolean;
+	// Set by an edit: the model hasn't seen the file whole as it is now, so
+	// the next read sends the full text rather than the "unchanged" stub.
+	edited?: boolean;
 };
 
 // One key per file: Windows ignores case, and the real path folds junctions,

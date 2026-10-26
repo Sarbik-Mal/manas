@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { Vault } from "../safety/scrub";
 import { tempRoot } from "../testing/fake-openai";
 import { cut, powershell } from "./powershell";
 import { readRecord } from "./reads";
@@ -11,6 +12,7 @@ const ctxFor = (cwd: string, signal = new AbortController().signal) => ({
 	cwd,
 	denied: () => undefined,
 	reads: readRecord(),
+	vault: new Vault(),
 });
 const input = (command: string, timeout: number | null = null) => ({
 	command,

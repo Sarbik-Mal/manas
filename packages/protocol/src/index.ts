@@ -138,6 +138,8 @@ export const CoreRequests = {
 		tool: Type.String(),
 		input: Type.Unknown(),
 		title: Type.String(),
+		// What the change does, e.g. an edit's -/+ lines (2.2).
+		diff: Nullable(Type.String()),
 		reason: Type.String(),
 		suggestions: Type.Array(Type.String()),
 	}),

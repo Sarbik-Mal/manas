@@ -16,6 +16,7 @@ const paint = (code: number) => (s: string, st: Style) =>
 export const dim = paint(2);
 export const red = paint(31);
 export const yellow = paint(33);
+const green = paint(32);
 
 const sym = (st: Style) =>
 	st.unicode
@@ -46,6 +47,19 @@ export function toolFinished(status: string, output: string, st: Style) {
 
 export const interrupted = (st: Style) =>
 	dim(`  ${sym(st).result} Interrupted`, st);
+
+// An approval's diff: `-` rows red, `+` rows green, the rest dim.
+export const diff = (text: string, st: Style) =>
+	text
+		.split("\n")
+		.map((l) =>
+			l.startsWith("- ")
+				? red(`  ${l}`, st)
+				: l.startsWith("+ ")
+					? green(`  ${l}`, st)
+					: dim(`  ${l}`, st),
+		)
+		.join("\n");
 
 export function notice(level: string, text: string, st: Style) {
 	if (level === "error") return red(text, st);

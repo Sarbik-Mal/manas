@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import Type, { type TSchema } from "typebox";
+import { Vault } from "../safety/scrub";
 import { readRecord } from "./reads";
 import { buildRegistry, callTool, defineTool, type Tool } from "./registry";
 
@@ -50,6 +51,7 @@ const ctx = {
 	cwd: process.cwd(),
 	denied: () => undefined,
 	reads: readRecord(),
+	vault: new Vault(),
 };
 const call = (name: string, args: unknown) =>
 	callTool(
@@ -208,4 +210,27 @@ test("step 1 ends with the tool's own check: refused before any permission", asy
 	expect(r).toEqual({ status: "error", output: "error: rm can change things" });
 	expect(asked).toBe(0);
 	expect(ran).toBe(0);
+});
+
+test("step 2 gets the tool's preview, made after validate", async () => {
+	let shown: string | undefined;
+	const seen = new WeakSet<object>();
+	const editor = tool("editor", Type.Object({ to: Type.String() }, strict), {
+		validate: async (i) => {
+			seen.add(i);
+			return undefined;
+		},
+		preview: (i) => (seen.has(i) ? `+ ${i.to}` : undefined),
+	});
+	await callTool(
+		buildRegistry([editor]),
+		"editor",
+		JSON.stringify({ to: "x" }),
+		ctx,
+		async ({ diff }) => {
+			shown = diff;
+			return undefined;
+		},
+	);
+	expect(shown).toBe("+ x");
 });

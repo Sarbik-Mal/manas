@@ -323,6 +323,7 @@ export async function runCli({
 			"No",
 		];
 		say(r.yellow(`Manas wants to ${m.title}`, style));
+		if (typeof m.diff === "string") say(r.diff(m.diff, style));
 		say(r.dim(`  ${m.reason}`, style));
 		say(options.map((o, i) => `  ${i + 1}. ${o}`).join("\n"));
 		let decision: "allow" | "allow_always" | "deny" | undefined;
