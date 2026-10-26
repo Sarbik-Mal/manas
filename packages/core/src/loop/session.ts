@@ -2,7 +2,7 @@ import type { ResponseInputItem } from "openai/resources/responses/responses";
 import { capability, checkEffort } from "../provider/models";
 import type { Usage } from "../provider/openai";
 import { CUT_OFF, type Store, textOf } from "../session/store";
-import type { Registry } from "../tools/registry";
+import type { Permit, Registry } from "../tools/registry";
 import { type LoopEvent, runTurn } from "./turn";
 
 export type Priority = "next" | "later" | "now";
@@ -43,6 +43,7 @@ export function createSession({
 	onInterrupt = () => {},
 	store,
 	items = [],
+	permit,
 }: {
 	registry: Registry;
 	model: string;
@@ -51,6 +52,8 @@ export function createSession({
 	store?: Store;
 	// A resumed session's history, already on disk.
 	items?: ResponseInputItem[];
+	// Step 2 of every tool call: settings rules now, the engine in 1.7.
+	permit?: Permit;
 	emit: (e: SessionEvent) => void;
 	// Called whenever a turn is stopped, so pending requests can be withdrawn.
 	onInterrupt?: () => void;
@@ -102,6 +105,7 @@ export function createSession({
 				effort,
 				signal: ac.signal,
 				inject: takeNext,
+				permit,
 			})) {
 				if (e.type === "text") {
 					messageId ??= `m${++messages}`;

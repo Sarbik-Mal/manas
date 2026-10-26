@@ -159,3 +159,19 @@ test("schemas that break strict mode are refused at startup", () => {
 		'tool "read" is defined twice',
 	);
 });
+
+test("step 2: a refused call never runs", async () => {
+	ran = 0;
+	const r = await callTool(
+		registry,
+		"read",
+		JSON.stringify({ path: "a", limit: null, opts: null }),
+		{ signal },
+		(name) => (name === "read" ? "denied by your settings (Read)" : undefined),
+	);
+	expect(r).toEqual({
+		status: "denied",
+		output: "error: denied by your settings (Read)",
+	});
+	expect(ran).toBe(0);
+});

@@ -17,7 +17,9 @@ export type Tool<S extends TSchema = TSchema> = {
 };
 
 export type Registry = { tools: Map<string, Tool>; specs: ToolSpec[] };
-export type ToolResult = { status: "ok" | "error"; output: string };
+export type ToolResult = { status: "ok" | "error" | "denied"; output: string };
+// Step 2: the reason a call is refused, if it is.
+export type Permit = (name: string) => string | undefined;
 
 // Only types `run`'s input from the schema.
 export const defineTool = <S extends TSchema>(tool: Tool<S>) => tool;
@@ -53,6 +55,7 @@ export async function callTool(
 	name: string,
 	args: string,
 	ctx: ToolCtx,
+	permit: Permit = () => undefined,
 ): Promise<ToolResult> {
 	// 1. Check input.
 	const tool = registry.tools.get(name);
@@ -69,6 +72,9 @@ export async function callTool(
 			`invalid input for ${name}: ${describeErrors(errors).join("; ")}`,
 		);
 	}
+	// 2. Permission. Backup (3) joins in milestone 2.
+	const refused = permit(name);
+	if (refused) return { status: "denied", output: `error: ${refused}` };
 	// 4. Run.
 	let output: string;
 	try {

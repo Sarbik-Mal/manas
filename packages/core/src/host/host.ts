@@ -10,11 +10,13 @@ import {
 } from "@manas/protocol";
 import Value from "typebox/value";
 import { version } from "../../package.json";
+import type { LiveSettings } from "../config/settings";
 import {
 	createSession,
 	type Session,
 	type SessionEvent,
 } from "../loop/session";
+import { deniedBy } from "../permissions/rules";
 import { checkEffort } from "../provider/models";
 import {
 	DEFAULT_ROOT,
@@ -26,9 +28,20 @@ import {
 	projectDir,
 	sessionFile,
 } from "../session/store";
-import { buildRegistry, describeErrors } from "../tools/registry";
+import { buildRegistry, describeErrors, type Tool } from "../tools/registry";
 
 type Fail = { code: string; message: string };
+export type SettingsSource = Pick<LiveSettings, "current" | "subscribe">;
+const DEFAULT_MODEL = "gpt-5.6-luna";
+const NO_SETTINGS = {
+	current: {
+		settings: {},
+		rules: { allow: [], ask: [], deny: [] },
+		warnings: [],
+		files: [],
+	},
+	subscribe: () => () => {},
+};
 class ProtocolError extends Error {
 	constructor(
 		readonly code: string,
@@ -42,9 +55,19 @@ class ProtocolError extends Error {
 // an in-process channel for the CLI in 1.4). One session per host.
 export function createHost(
 	send: (line: string) => void,
-	defaults: { model?: string; effort?: string; root?: string } = {},
+	{
+		root = DEFAULT_ROOT,
+		settings = NO_SETTINGS,
+		tools = [],
+	}: {
+		// Where sessions are saved; tests use a temp folder.
+		root?: string;
+		// The merged settings files, reloaded when they change (1.6).
+		settings?: SettingsSource;
+		// Every tool the core has; real ones arrive in 1.9.
+		tools?: Tool[];
+	} = {},
 ) {
-	const root = defaults.root ?? DEFAULT_ROOT;
 	let replaying = false;
 	let initialized = false;
 	let session: Session | undefined;
@@ -140,11 +163,38 @@ export function createHost(
 			},
 			"session/new"({ cwd, model, effort }) {
 				noSession();
-				const m = model ?? defaults.model ?? "gpt-5.6-luna";
-				const eff = effort ?? defaults.effort;
+				// The request wins, then settings. A bad value from settings is
+				// dropped with a warning; a bad one in the request is an error.
+				const from = settings.current.settings;
+				const warnings: string[] = [];
+				const valid = (m: string, e?: string) => {
+					try {
+						checkEffort(m, e);
+						return true;
+					} catch (err) {
+						warnings.push(`settings: ${(err as Error).message} (ignored)`);
+						return false;
+					}
+				};
+				let m = model ?? DEFAULT_MODEL;
+				if (!model && from.models?.main && valid(from.models.main)) {
+					m = from.models.main;
+				}
+				let eff = effort ?? undefined;
+				if (effort == null && from.effort && valid(m, from.effort)) {
+					eff = from.effort;
+				}
 				invalidParams(() => checkEffort(m, eff));
 				const id = crypto.randomUUID();
-				open(id, sessionFile(projectDir(cwd, root), id), cwd, m, eff);
+				open(
+					id,
+					sessionFile(projectDir(cwd, root), id),
+					cwd,
+					m,
+					eff,
+					undefined,
+					warnings,
+				);
 				return { session_id: id };
 			},
 			"session/resume"({ session_id, cwd }) {
@@ -201,10 +251,19 @@ export function createHost(
 		model: string,
 		effort: string | undefined,
 		loaded?: Loaded,
+		warnings: string[] = [],
 	) {
-		const registry = buildRegistry([]);
+		// A bare deny removes the tool for the whole session. One added later
+		// keeps the list (and the prompt cache) and is refused by `permit`.
+		const registry = buildRegistry(
+			tools.filter((t) => !deniedBy(t.name, settings.current.rules)),
+		);
 		const s = createSession({
 			registry,
+			permit: (name) => {
+				const rule = deniedBy(name, settings.current.rules);
+				return rule ? `denied by your settings (${rule})` : undefined;
+			},
 			model,
 			effort,
 			emit: onSession,
@@ -227,6 +286,9 @@ export function createHost(
 				tools: registry.specs.map((t) => t.name),
 				cwd,
 			});
+			for (const w of [...settings.current.warnings, ...warnings]) {
+				notice("warn", w);
+			}
 			if (loaded) {
 				replaying = true;
 				for (const e of s.replay()) onSession(e);
@@ -241,6 +303,14 @@ export function createHost(
 			updateState();
 		});
 	}
+	const unsubscribe = settings.subscribe((e) =>
+		e.ok
+			? notice("info", "Settings reloaded.")
+			: notice(
+					"error",
+					`Settings not reloaded: ${e.error} Keeping the last good settings.`,
+				),
+	);
 	const invalidParams = (f: () => void) => {
 		try {
 			f();
@@ -342,6 +412,7 @@ export function createHost(
 		},
 		// The front end went away: stop work, withdraw requests.
 		close() {
+			unsubscribe();
 			session?.interrupt(true);
 			cancelPending("closed");
 		},

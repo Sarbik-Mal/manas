@@ -159,6 +159,7 @@ export const Events = {
 		status: Type.Union([
 			Type.Literal("ok"),
 			Type.Literal("error"),
+			Type.Literal("denied"),
 			Type.Literal("interrupted"),
 		]),
 		output: Type.String(),

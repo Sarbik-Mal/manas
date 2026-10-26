@@ -1,5 +1,14 @@
 import { afterAll, beforeEach, expect, test } from "bun:test";
-import { fakeOpenAI, type Msg, say, tempRoot } from "../testing/fake-openai";
+import Type from "typebox";
+import type { Loaded } from "../config/settings";
+import {
+	call,
+	fakeOpenAI,
+	type Msg,
+	say,
+	tempRoot,
+} from "../testing/fake-openai";
+import { defineTool } from "../tools/registry";
 import { createHost } from "./host";
 
 const fake = fakeOpenAI();
@@ -7,9 +16,15 @@ afterAll(fake.stop);
 beforeEach(fake.reset);
 
 // A front end on a fake transport: everything the host sends lands in `out`.
-function connect(root = tempRoot()) {
+function connect(
+	root = tempRoot(),
+	extra: Omit<Parameters<typeof createHost>[1] & {}, "root"> = {},
+) {
 	const out: Msg[] = [];
-	const host = createHost((line) => out.push(JSON.parse(line)), { root });
+	const host = createHost((line) => out.push(JSON.parse(line)), {
+		root,
+		...extra,
+	});
 	let n = 0;
 	const send = (type: string, data: object = {}) => {
 		const id = `r${++n}`;
@@ -242,4 +257,131 @@ test("sessions are saved, listed and resumed with a replay", async () => {
 	expect(
 		b.send("session/resume", { session_id: result.session_id, cwd: "E:\\x" }),
 	).toEqual(error("session_exists"));
+});
+
+// Settings the test controls: `reload` swaps them, `fail` reports a broken file.
+function fakeSettings(current: Partial<Loaded> = {}) {
+	const listeners = new Set<(e: { ok: boolean; error?: string }) => void>();
+	const src = {
+		current: {
+			settings: {},
+			rules: { allow: [], ask: [], deny: [] },
+			warnings: [],
+			files: [],
+			...current,
+		} as Loaded,
+		subscribe(l: (e: { ok: boolean; error?: string }) => void) {
+			listeners.add(l);
+			return () => {
+				listeners.delete(l);
+			};
+		},
+		reload(next: Partial<Loaded>) {
+			src.current = { ...src.current, ...next };
+			for (const l of listeners) l({ ok: true });
+		},
+		fail(error: string) {
+			for (const l of listeners) l({ ok: false, error });
+		},
+	};
+	return src;
+}
+const tool = (name: string) =>
+	defineTool({
+		name,
+		description: name,
+		schema: Type.Object({}, { additionalProperties: false }),
+		deferred: false,
+		readOnly: true,
+		run: async () => `${name} ran`,
+	});
+const tools = [tool("read"), tool("grep")];
+const rules = (deny: string[]) => ({ rules: { allow: [], ask: [], deny } });
+
+test("a bare deny at start removes the tool from the list", async () => {
+	const c = connect(undefined, {
+		tools,
+		settings: fakeSettings(rules(["Read"])),
+	});
+	fake.replies.push(say("ok"));
+	await c.ready();
+	expect(c.events("session/started")[0].tools).toEqual(["grep"]);
+	c.send("session/prompt", { text: "hi" });
+	await c.waitFor(() => c.states().at(-1) === "idle" && c.states().length > 2);
+	expect(
+		(fake.bodies[0].tools as { name: string }[]).map((t) => t.name),
+	).toEqual(["grep"]);
+});
+
+test("a deny added mid-session keeps the list but refuses the call", async () => {
+	const settings = fakeSettings();
+	const c = connect(undefined, { tools, settings });
+	await c.ready();
+	expect(c.events("session/started")[0].tools).toEqual(["read", "grep"]);
+	settings.reload(rules(["Read"]));
+	expect(c.events("notice").at(-1)).toMatchObject({
+		level: "info",
+		text: "Settings reloaded.",
+	});
+	fake.replies.push(
+		{ items: [call("read", {}), call("grep", {})] },
+		say("done"),
+	);
+	c.send("session/prompt", { text: "go" });
+	await c.waitFor(() => c.events("turn/finished").length === 1);
+	expect(c.events("tool/finished").map((e) => [e.status, e.output])).toEqual([
+		["denied", "error: denied by your settings (Read)"],
+		["ok", "grep ran"],
+	]);
+	expect(
+		(fake.bodies[1].tools as { name: string }[]).map((t) => t.name),
+	).toEqual(["read", "grep"]);
+});
+
+test("a broken reload is reported, and the old rules still apply", async () => {
+	const settings = fakeSettings();
+	const c = connect(undefined, { tools, settings });
+	await c.ready();
+	settings.reload(rules(["Read"]));
+	settings.fail("settings x line 2: JSONC Parse error");
+	expect(c.events("notice").at(-1)).toMatchObject({
+		level: "error",
+		text: "Settings not reloaded: settings x line 2: JSONC Parse error Keeping the last good settings.",
+	});
+	fake.replies.push({ items: [call("read", {})] }, say("done"));
+	c.send("session/prompt", { text: "go" });
+	await c.waitFor(() => c.events("turn/finished").length === 1);
+	expect(c.events("tool/finished")[0].status).toBe("denied");
+});
+
+test("settings give the model and effort; bad ones and warnings become notices", async () => {
+	const a = connect(undefined, {
+		settings: fakeSettings({
+			settings: { models: { main: "gpt-4o-mini" }, effort: "high" },
+			warnings: ['settings x: unknown key "colour" (ignored)'],
+		}),
+	});
+	await a.ready();
+	expect(a.events("session/started")[0]).toMatchObject({
+		model: "gpt-4o-mini",
+		effort: "high",
+	});
+	expect(a.events("notice").map((e) => e.text)).toEqual([
+		'settings x: unknown key "colour" (ignored)',
+	]);
+
+	const b = connect(undefined, {
+		settings: fakeSettings({
+			settings: { models: { main: "nope" }, effort: "minimal" },
+		}),
+	});
+	await b.ready();
+	expect(b.events("session/started")[0]).toMatchObject({
+		model: "gpt-5.6-luna",
+		effort: null,
+	});
+	expect(b.events("notice").map((e) => e.text)).toEqual([
+		'settings: unknown model "nope" (ignored)',
+		expect.stringContaining('settings: effort "minimal" not supported'),
+	]);
 });

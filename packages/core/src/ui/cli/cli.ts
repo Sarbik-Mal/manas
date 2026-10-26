@@ -1,7 +1,7 @@
 import { createInterface, type Interface } from "node:readline";
 import { version } from "../../../package.json";
 import { doctor } from "../../doctor";
-import { createHost } from "../../host/host";
+import { createHost, type SettingsSource } from "../../host/host";
 import { capability, modelNames } from "../../provider/models";
 import { HELP, parseCommand } from "./commands";
 import * as r from "./render";
@@ -27,7 +27,7 @@ export async function runCli({
 	input,
 	output,
 	cwd,
-	defaults = {},
+	settings,
 	firstPrompt,
 	style,
 	root,
@@ -36,7 +36,8 @@ export async function runCli({
 	input: In;
 	output: NodeJS.WritableStream;
 	cwd: string;
-	defaults?: { model?: string; effort?: string };
+	// The merged settings files; the host reads model, effort and rules.
+	settings?: SettingsSource;
 	firstPrompt?: string;
 	style: r.Style;
 	// Where sessions are saved; tests use a temp folder.
@@ -57,8 +58,10 @@ export async function runCli({
 	let requests = 0;
 	const waiting = new Map<string, (r: Response) => void>();
 	let onIdle: (() => void) | undefined;
-	let model = defaults.model ?? "gpt-5.6-luna";
-	let effort: string | null = defaults.effort ?? null;
+	// Set by `session/started`. The first session takes them from settings;
+	// /clear keeps the current ones.
+	let model = "";
+	let effort: string | null = null;
 
 	const onLine = (line: string) => {
 		const m = JSON.parse(line) as Msg;
@@ -90,7 +93,7 @@ export async function runCli({
 		});
 	// A host with no session yet; sessions can be listed now.
 	const open = async () => {
-		host = createHost(onLine, { root });
+		host = createHost(onLine, { root, settings });
 		await request("initialize", {
 			client: { name: "manas-cli", version },
 			capabilities: [],
@@ -104,7 +107,11 @@ export async function runCli({
 		});
 		const res = id
 			? await request("session/resume", { session_id: id, cwd })
-			: await request("session/new", { cwd, model, effort });
+			: await request("session/new", {
+					cwd,
+					model: model || null,
+					effort: model ? effort : null,
+				});
 		if (res.ok) await ready;
 		onIdle = undefined;
 		return res.ok ? undefined : (res.error?.message ?? "error");

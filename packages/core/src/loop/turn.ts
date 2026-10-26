@@ -3,7 +3,12 @@ import type {
 	ResponseInputItem,
 } from "openai/resources/responses/responses";
 import { streamResponse, type Usage } from "../provider/openai";
-import { buildRegistry, callTool, type Registry } from "../tools/registry";
+import {
+	buildRegistry,
+	callTool,
+	type Permit,
+	type Registry,
+} from "../tools/registry";
 
 export type LoopEvent =
 	| { type: "text"; delta: string }
@@ -12,7 +17,7 @@ export type LoopEvent =
 	| {
 			type: "tool_finished";
 			callId: string;
-			status: "ok" | "error" | "interrupted";
+			status: "ok" | "error" | "denied" | "interrupted";
 			output: string;
 	  }
 	| {
@@ -39,6 +44,7 @@ export async function* runTurn(
 		registry = buildRegistry([]),
 		signal = new AbortController().signal,
 		inject = () => [],
+		permit,
 		...opts
 	}: {
 		model?: string;
@@ -46,6 +52,7 @@ export async function* runTurn(
 		registry?: Registry;
 		signal?: AbortSignal;
 		inject?: () => string[];
+		permit?: Permit;
 	} = {},
 ): AsyncGenerator<LoopEvent> {
 	const usage: Usage = { input: 0, cached: 0, output: 0, reasoning: 0 };
@@ -118,7 +125,7 @@ export async function* runTurn(
 				input,
 				// Raced, so a tool that ignores `signal` can't hold up an interrupt.
 				result: Promise.race([
-					callTool(registry, call.name, call.arguments, { signal }),
+					callTool(registry, call.name, call.arguments, { signal }, permit),
 					interrupted.then(
 						() => ({ status: "interrupted", output: INTERRUPTED }) as const,
 					),
