@@ -1,9 +1,9 @@
 import { parseArgs } from "node:util";
 import { version } from "../package.json";
 import { enableDebugLog } from "./log/debug";
+import { runTurn } from "./loop/turn";
 import { rgPath } from "./platform/win/bin";
 import { protect, unprotect } from "./platform/win/dpapi";
-import { streamText } from "./provider/openai";
 
 try {
 	const { values, positionals } = parseArgs({
@@ -24,8 +24,8 @@ try {
 	} else if (positionals.length === 1 && positionals[0] === "doctor") {
 		await doctor();
 	} else if (positionals.length > 0) {
-		for await (const text of streamText(positionals.join(" "), values)) {
-			process.stdout.write(text);
+		for await (const e of runTurn([], positionals.join(" "), values)) {
+			if (e.type === "text") process.stdout.write(e.delta);
 		}
 		process.stdout.write("\n");
 	} else {
