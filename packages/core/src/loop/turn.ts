@@ -10,6 +10,7 @@ import {
 	type Registry,
 	type SessionCtx,
 } from "../tools/registry";
+import { INSTRUCTIONS } from "./prompt";
 
 export type LoopEvent =
 	| { type: "text"; delta: string }
@@ -71,6 +72,7 @@ export async function* runTurn(
 		try {
 			const reply = streamResponse(history, {
 				...opts,
+				instructions: INSTRUCTIONS,
 				tools: registry.specs,
 				signal,
 			});

@@ -705,3 +705,34 @@ test("the real tools run in the session's folder, and a Read deny filters grep",
 	expect(g).toMatchObject({ status: "ok", output: "app.ts" });
 	expect(s).toMatchObject({ status: "denied" });
 });
+
+// --- 1.10: instructions and the first message ---
+
+test("a session's first message is saved, and a resume sends the same bytes", async () => {
+	const root = tempRoot();
+	const project = tempRoot();
+	const a = connect(root);
+	fake.replies.push(say("one"));
+	const { result } = await a.ready(project);
+	a.send("session/prompt", { text: "hi" });
+	await a.waitFor(() => a.events("turn/finished").length === 1);
+	const first = fake.bodies[0].input[0];
+	expect(first).toMatchObject({ role: "developer" });
+	expect(JSON.stringify(first)).toContain(
+		`Working directory: ${project.replaceAll("\\", "\\\\")}`,
+	);
+	expect(fake.bodies[0].instructions).toContain("You are Manas");
+
+	const b = connect(root);
+	b.send("initialize", {
+		client: { name: "t", version: "0" },
+		capabilities: [],
+	});
+	b.send("session/resume", { session_id: result.session_id, cwd: project });
+	await b.waitFor(() => b.states().length > 0);
+	fake.replies.push(say("two"));
+	b.send("session/prompt", { text: "again" });
+	await b.waitFor(() => b.events("turn/finished").length === 1);
+	expect(fake.bodies[1].input[0]).toEqual(first);
+	expect(fake.bodies[1].instructions).toBe(fake.bodies[0].instructions);
+});

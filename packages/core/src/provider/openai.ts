@@ -74,9 +74,12 @@ export async function* streamResponse(
 		model = "gpt-5.6-luna",
 		effort,
 		tools = [],
+		instructions,
 		signal,
 	}: {
 		model?: string;
+		// The system prompt; the same for every request so it stays cached.
+		instructions?: string;
 		effort?: string;
 		tools?: ToolSpec[];
 		signal?: AbortSignal;
@@ -106,6 +109,7 @@ export async function* streamResponse(
 			.create(
 				{
 					model,
+					instructions,
 					input,
 					stream: true,
 					store: false,

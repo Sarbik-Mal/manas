@@ -4,6 +4,7 @@ import type { Usage } from "../provider/openai";
 import { scrubItem, type Vault } from "../safety/scrub";
 import { CUT_OFF, type Store, textOf } from "../session/store";
 import type { Permit, Registry, SessionCtx } from "../tools/registry";
+import { dateNote, today as localToday } from "./prompt";
 import { type LoopEvent, runTurn } from "./turn";
 
 export type Priority = "next" | "later" | "now";
@@ -48,6 +49,8 @@ export function createSession({
 	vault,
 	ready,
 	toolCtx,
+	context,
+	today = localToday,
 }: {
 	registry: Registry;
 	model: string;
@@ -64,6 +67,11 @@ export function createSession({
 	permit?: Permit;
 	// The project folder and deny check every tool call gets.
 	toolCtx?: SessionCtx;
+	// The first message of a new session (its environment), sent before the
+	// first prompt; a resumed session already has it.
+	context?: () => string;
+	// Today's date, as YYYY-MM-DD; tests move the clock.
+	today?: () => string;
 	emit: (e: SessionEvent) => void;
 	// Called whenever a turn is stopped, so pending requests can be withdrawn.
 	onInterrupt?: () => void;
@@ -113,6 +121,12 @@ export function createSession({
 			// After `running` is this turn's: an interrupt during the wait
 			// aborts it, and the turn ends `interrupted` without a request.
 			await ready;
+			// Appended, never edited in: the cached prefix stays the same.
+			if (context) {
+				const note =
+					history.length === 0 ? context() : dateNote(history, today());
+				if (note) history.push({ role: "developer", content: note });
+			}
 			const turnId = `t${++turns}`;
 			let messageId: string | undefined;
 			for await (const e of runTurn(history, deliver(q), {

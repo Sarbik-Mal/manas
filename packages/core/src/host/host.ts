@@ -13,6 +13,7 @@ import {
 import Value from "typebox/value";
 import { version } from "../../package.json";
 import type { LiveSettings, Rule } from "../config/settings";
+import { firstMessage } from "../loop/prompt";
 import {
 	createSession,
 	type Session,
@@ -339,6 +340,7 @@ export function createHost(
 			registry,
 			vault: v,
 			ready,
+			context: () => firstMessage(cwd),
 			toolCtx: {
 				cwd,
 				denied: (path) => deniedPath(path, settings.current.rules, cwd),

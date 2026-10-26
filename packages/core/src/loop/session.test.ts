@@ -277,3 +277,58 @@ test("with a store: items, usage and changes are saved", async () => {
 		'set {"effort":"high"}',
 	]);
 });
+
+test("the first message opens a new session; a new day appends a note; instructions on every request", async () => {
+	let date = "2026-10-26";
+	const events: SessionEvent[] = [];
+	const items: ResponseInputItem[] = [];
+	const make = (from: ResponseInputItem[]) =>
+		createSession({
+			registry: buildRegistry([]),
+			model: "gpt-5.6-luna",
+			emit: (e) => events.push(e),
+			items: from,
+			context: () => `<environment>\nToday's date: ${date}\n</environment>`,
+			today: () => date,
+		});
+	const idles = (n: number) => async () => {
+		for (
+			let i = 0;
+			i < 400 && events.filter((e) => e.type === "idle").length < n;
+			i++
+		)
+			await Bun.sleep(5);
+	};
+	const env: ResponseInputItem = {
+		role: "developer",
+		content: "<environment>\nToday's date: 2026-10-26\n</environment>",
+	};
+
+	const s = make([]);
+	replies.push(say("one"), say("two"));
+	s.prompt("first");
+	await idles(1)();
+	s.prompt("second");
+	await idles(2)();
+	expect(bodies[0].instructions).toContain("You are Manas");
+	expect(bodies[0].input).toEqual([env, { role: "user", content: "first" }]);
+	// Same day: the prefix is just extended.
+	expect(bodies[1].input.slice(0, 2)).toEqual(bodies[0].input);
+	expect(bodies[1].input[2]).toMatchObject({ role: "assistant" });
+	expect(bodies[1].input).toHaveLength(4);
+
+	// Resumed the next day: the saved first message stays, a note is appended.
+	items.push(...s.history);
+	date = "2026-10-27";
+	const r = make(items);
+	replies.push(say("three"));
+	r.prompt("third");
+	await idles(3)();
+	expect(bodies[2].input[0]).toEqual(env);
+	expect(bodies[2].input.slice(-2)).toEqual([
+		{ role: "developer", content: "Today's date is now 2026-10-27." },
+		{ role: "user", content: "third" },
+	]);
+	// Neither shows when the chat is replayed on screen.
+	expect(JSON.stringify(replayEvents(r.history))).not.toContain("Today's date");
+});

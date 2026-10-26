@@ -6,7 +6,7 @@ import { defineTool } from "./registry";
 
 const SHELL = Bun.which("pwsh") ?? "powershell.exe";
 const IS_51 = !/pwsh/i.test(SHELL);
-const EDITION = IS_51
+export const EDITION = IS_51
 	? "Windows PowerShell 5.1 (powershell.exe)"
 	: "PowerShell 7 (pwsh)";
 
