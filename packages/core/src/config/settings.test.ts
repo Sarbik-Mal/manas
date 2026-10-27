@@ -50,7 +50,7 @@ test("layers: flags > project > user; objects merge per key; lists join", () => 
 			"effort": "medium",
 			"models": { "main": "gpt-4o-mini" },
 			"permissions": { "deny": ["PowerShell(rm *)", "Read"] },
-			"limits": { "scratchpadMB": 10 },
+			"limits": { "webSearchesPerTurn": 10 },
 		}`,
 	);
 	const { settings, rules } = load({ effort: "high", deny: ["web_fetch"] });
@@ -59,7 +59,10 @@ test("layers: flags > project > user; objects merge per key; lists join", () => 
 		main: "gpt-4o-mini",
 		cheap: "gpt-4o-mini",
 	});
-	expect(settings.limits).toEqual({ parallelAgents: 2, scratchpadMB: 10 });
+	expect(settings.limits).toEqual({
+		parallelAgents: 2,
+		webSearchesPerTurn: 10,
+	});
 	const userBase = join(home, ".manas");
 	expect(rules).toEqual({
 		allow: [{ text: "Grep", base: userBase }],

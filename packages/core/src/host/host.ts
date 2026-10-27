@@ -1,3 +1,4 @@
+import { mkdirSync, rmdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import {
@@ -86,6 +87,7 @@ export function createHost(
 		settings = NO_SETTINGS,
 		tools = [],
 		cleanup,
+		temp = join(tmpdir(), "manas"),
 	}: {
 		// Where sessions are saved; tests use a temp folder.
 		root?: string;
@@ -96,6 +98,9 @@ export function createHost(
 		// The 2.9 sweep of this folder (~/.manas) once a session opens; tests
 		// leave it out.
 		cleanup?: { dir: string };
+		// Background task output and scratchpads, as Claude Code keeps them
+		// in the system temp folder; tests use a temp folder of their own.
+		temp?: string;
 	} = {},
 ) {
 	let replaying = false;
@@ -104,6 +109,7 @@ export function createHost(
 	let capabilities: string[] = [];
 	let session: Session | undefined;
 	let tasks: Tasks | undefined;
+	let scratch: string | undefined;
 	let sessionId: string | null = null;
 	let seq = 0;
 	let lastState: string | undefined;
@@ -437,12 +443,19 @@ export function createHost(
 		// ask_user only for a front end that can answer, so nothing waits on
 		// a script that can't.
 		const canAsk = capabilities.includes("user_ask");
+		const shellMax = settings.current.settings.shellOutputMaxChars;
 		const registry = buildRegistry(
-			tools.filter(
-				(t) =>
-					!deniedBy(t.name, settings.current.rules) &&
-					(t.name !== "ask_user" || canAsk),
-			),
+			tools
+				.filter(
+					(t) =>
+						!deniedBy(t.name, settings.current.rules) &&
+						(t.name !== "ask_user" || canAsk),
+				)
+				.map((t) =>
+					t.name === "powershell" && shellMax
+						? { ...t, maxResultChars: shellMax }
+						: t,
+				),
 		);
 		// The vault sits beside the session: sessions/<id>/vault.bin. Like the
 		// session file, it's only written once the session has a message.
@@ -486,10 +499,15 @@ export function createHost(
 		const backups = openBackups(join(dirname(dirname(file)), "backups"), id);
 		// Not saved: a resumed session starts in the project, as in Claude Code.
 		const shell = { cwd };
-		// Background commands write to the temp folder, as Claude Code's do:
-		// %TEMP%\manas\<project>\<session>\tasks (scrubbed, line by line).
+		// The session's temp folder, as Claude Code's: %TEMP%\manas\<project>\
+		// <session>, with tasks\ (background output, scrubbed line by line)
+		// and scratchpad\ (the model's own files, 3.4).
+		const own = join(dirname(projectDir(cwd, temp)), id);
+		const pad = join(own, "scratchpad");
+		scratch = pad;
+		mkdirSync(pad, { recursive: true });
 		tasks = openTasks({
-			dir: join(dirname(projectDir(cwd, join(tmpdir(), "manas"))), id, "tasks"),
+			dir: join(own, "tasks"),
 			vault: v,
 			notify: (text) => session?.notify(text),
 			finished: (f) =>
@@ -504,7 +522,7 @@ export function createHost(
 			registry,
 			vault: v,
 			ready,
-			context: () => firstMessage(cwd),
+			context: () => firstMessage(cwd, undefined, pad),
 			verbosity,
 			backups,
 			toolCtx: {
@@ -516,6 +534,9 @@ export function createHost(
 				vault: v,
 				backups,
 				ask: canAsk ? (questions, callId) => ask(questions, callId) : undefined,
+				scratch: pad,
+				// Beside the vault: sessions/<id>/tool-results (3.4).
+				results: join(dirname(vaultFile), "tool-results"),
 			},
 			permit: async ({ tool, input, callId, diff }) => {
 				const d = await decide(tool, input, {
@@ -524,6 +545,7 @@ export function createHost(
 					cwd,
 					here: shell.cwd,
 					mode,
+					scratch: pad,
 				});
 				if (d.behavior === "allow") return undefined;
 				if (d.behavior === "deny") return { output: d.reason };
@@ -577,6 +599,7 @@ export function createHost(
 		if (cleanup)
 			sweep({
 				dir: cleanup.dir,
+				temp,
 				days: settings.current.settings.limits?.cleanupPeriodDays ?? 30,
 				keep: id,
 			}).then(
@@ -789,6 +812,14 @@ export function createHost(
 			unsubscribe();
 			session?.interrupt(true);
 			tasks?.killAll();
+			// The scratchpad and its parents, once empty; files in it stay
+			// with the session (the cleanup deletes them with it).
+			if (scratch)
+				try {
+					rmdirSync(scratch);
+					rmdirSync(dirname(scratch));
+					rmdirSync(dirname(dirname(scratch)));
+				} catch {}
 			cancelPending("closed");
 		},
 	};

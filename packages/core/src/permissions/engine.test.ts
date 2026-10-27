@@ -439,3 +439,46 @@ test("parseMode: plain and display names, any case; later modes refused", () => 
 	);
 	expect(() => parseMode("x")).toThrow('unknown mode "x"');
 });
+
+test("3.4: write and edit in the scratchpad run without asking, in every mode", async () => {
+	const scratch = mkdtempSync(join(tmpdir(), "manas-pad-"));
+	const write = fileTool("write", false);
+	const at = (path: string, r = rules(), mode: Mode = "manual") =>
+		decide(
+			write,
+			{ path },
+			{ rules: r, session: [], cwd, home, mode, scratch },
+		);
+	expect(await at(join(scratch, "helper.ps1"))).toMatchObject({
+		behavior: "allow",
+		reason: "scratchpad: a file for this session",
+	});
+	expect(
+		(
+			await decide(
+				fileTool("edit", false),
+				{ path: join(scratch, "a", "b.md") },
+				{ rules: rules(), session: [], cwd, home, scratch },
+			)
+		).behavior,
+	).toBe("allow");
+	// Protected names still ask; deny and ask rules still win; outside, as before.
+	expect((await at(join(scratch, ".git", "config"))).behavior).toBe("ask");
+	expect(
+		(await at(join(scratch, "x.txt"), rules({ deny: ["Write"] }))).behavior,
+	).toBe("deny");
+	expect(
+		(await at(join(scratch, "x.txt"), rules({ ask: ["Edit"] }))).behavior,
+	).toBe("ask");
+	expect((await at(join(tmpdir(), "elsewhere.txt"))).behavior).toBe("ask");
+	// A command writing there is checked as usual.
+	expect(
+		(
+			await decide(
+				powershell,
+				{ command: `Set-Content ${join(scratch, "x.txt")} hi` },
+				{ rules: rules(), session: [], cwd, home, scratch },
+			)
+		).behavior,
+	).toBe("ask");
+});

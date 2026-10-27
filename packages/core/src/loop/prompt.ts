@@ -16,13 +16,19 @@ export const today = () => new Date().toLocaleDateString("en-CA");
 
 // The first message of a session (developer role): its environment and a git
 // snapshot, as Claude Code gives. Saved with the session, so a resume reuses it.
-export function firstMessage(cwd: string, date = today()) {
+// The scratchpad line is Claude Code's.
+export function firstMessage(cwd: string, date = today(), scratch?: string) {
 	return [
 		"<environment>",
 		`Today's date: ${date}`,
 		`OS: ${version()} ${release()}`,
 		`Shell: ${EDITION} (the powershell tool)`,
 		`Working directory: ${cwd}`,
+		...(scratch
+			? [
+					`Scratchpad directory: ${scratch} — always use it for temporary files (intermediate results, scripts, outputs that don't belong in the project) instead of the system temp folder; it is session-specific, isolated from the project, and can be used without permission prompts.`,
+				]
+			: []),
 		"</environment>",
 		gitSnapshot(cwd),
 	].join("\n");

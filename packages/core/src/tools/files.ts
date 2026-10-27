@@ -70,6 +70,8 @@ export const read = defineTool({
 	),
 	deferred: false,
 	readOnly: true,
+	// Caps itself (~25K tokens), so it never spills, as in Claude Code.
+	maxResultChars: Number.POSITIVE_INFINITY,
 	permission: { path: (i) => i.file_path },
 	async run({ file_path, offset, limit }, ctx) {
 		const path = full(ctx, file_path);

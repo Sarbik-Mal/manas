@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Vault } from "../safety/scrub";
 import { tempRoot } from "../testing/fake-openai";
 import { NO_BACKUPS } from "./backups";
 import { powershell } from "./powershell";
 import { readRecord } from "./reads";
-import { openTasks, taskStop } from "./tasks";
+import { type Ended, openTasks, taskStop } from "./tasks";
 
 const setup = (stall?: { every: number; quiet: number }) => {
 	const cwd = tempRoot();
@@ -91,4 +91,37 @@ test("a command waiting on a question gets one stall notice", async () => {
 	await Bun.sleep(600);
 	expect(notes).toHaveLength(1);
 	tasks.killAll();
+});
+
+test("3.4: a background command whose output passes the cap is stopped", async () => {
+	const notes: string[] = [];
+	const tasks = openTasks({
+		dir: join(tempRoot(), "tasks"),
+		vault: new Vault(),
+		notify: (t) => notes.push(t),
+		outputMax: 1000,
+	});
+	let killed = false;
+	let end: (e: Ended) => void = () => {};
+	const t = tasks.adopt({
+		command: "spam",
+		description: "Spam",
+		callId: "c",
+		initial: "",
+		kill: () => {
+			killed = true;
+			end({ code: 1, failed: true });
+		},
+		ended: new Promise<Ended>((r) => {
+			end = r;
+		}),
+	});
+	for (let i = 0; i < 50; i++) t.feed(`${"z".repeat(99)}\n`);
+	await Bun.sleep(10);
+	expect(killed).toBe(true);
+	expect(notes[0]).toContain("<status>killed</status>");
+	expect(notes[0]).toContain(
+		'<summary>Background command "Spam" was stopped: its output passed 5 GB</summary>',
+	);
+	expect(readFileSync(t.outputFile, "utf8").length).toBeLessThanOrEqual(1100);
 });

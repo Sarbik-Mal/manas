@@ -104,11 +104,13 @@ const KEYS = {
 		{ production: Type.Optional(Strings), notes: Type.Optional(Type.String()) },
 		closed,
 	),
+	// How much of a command's ok output comes inline before it's saved to a
+	// file (3.4; Claude Code's bashOutputMaxChars).
+	shellOutputMaxChars: Type.Integer({ minimum: 1, maximum: 128_000 }),
 	network: Type.Object({ allowDomains: Type.Optional(Strings) }, closed),
 	limits: Type.Object(
 		{
 			parallelAgents: Type.Optional(Type.Integer({ minimum: 1 })),
-			scratchpadMB: Type.Optional(Type.Integer({ minimum: 1 })),
 			webSearchesPerTurn: Type.Optional(Type.Integer({ minimum: 0 })),
 			cleanupPeriodDays: Type.Optional(Type.Integer({ minimum: 1 })),
 		},

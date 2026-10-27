@@ -43,6 +43,7 @@ export type Context = {
 	here?: string; // where relative paths resolve (the shell's folder), or cwd
 	home?: string;
 	mode?: Mode;
+	scratch?: string; // the session's scratchpad (3.4)
 };
 
 // --- Modes (architecture.md §8) ---
@@ -160,6 +161,15 @@ export async function decide(
 			reason: "the command is longer than 10,000 characters",
 			suggestions: [],
 		};
+	// The scratchpad's files are the session's own, in every mode (Claude
+	// Code's rule); protected names there still ask.
+	if (
+		target !== undefined &&
+		ctx.scratch &&
+		covers("edit", tool.name) &&
+		inProject(resolve(here, target), ctx.scratch)
+	)
+		return { behavior: "allow", reason: "scratchpad: a file for this session" };
 	if (ctx.mode === "acceptEdits" && editable)
 		return { behavior: "allow", reason: "lowkey: an edit in the project" };
 	const allows = [...ctx.rules.allow, ...ctx.session];

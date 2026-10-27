@@ -6,12 +6,14 @@ import {
 	utimes,
 	writeFile,
 } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // The cleanup (memory-management.md), Claude Code's retention sweep: once a
 // day at startup, everything older than `days` by last activity goes:
 // sessions with their vaults and backups, blobs no checkpoint list names,
-// debug logs, and project folders left empty. Prompt history stays.
+// debug logs, and project folders left empty. Prompt history stays. A
+// session's temp folder (scratchpad, task output) goes with the session.
 
 const DAY = 86_400_000;
 
@@ -37,6 +39,7 @@ export async function sweep({
 	days,
 	keep,
 	now = Date.now(),
+	temp = join(tmpdir(), "manas"),
 }: {
 	// ~/.manas
 	dir: string;
@@ -44,6 +47,8 @@ export async function sweep({
 	// The session this process opened: never deleted, however old.
 	keep?: string;
 	now?: number;
+	// %TEMP%\manas: <project>\<session> folders (3.4).
+	temp?: string;
 }): Promise<Swept | undefined> {
 	const marker = join(dir, ".last-cleanup");
 	const last = await mtime(marker);
@@ -68,6 +73,7 @@ export async function sweep({
 	};
 
 	const projects = join(dir, "projects");
+	const deleted = new Set<string>();
 	for (const name of await list(projects)) {
 		const project = join(projects, name);
 		const sessions = join(project, "sessions");
@@ -86,6 +92,7 @@ export async function sweep({
 				continue;
 			}
 			out.sessions++;
+			deleted.add(join(name, id));
 			await gone(join(sessions, id));
 			await gone(join(backups, id));
 		}
@@ -119,6 +126,21 @@ export async function sweep({
 		if (await empty(project)) {
 			if (await gone(project)) out.projects++;
 		}
+	}
+
+	// A temp folder goes with its session, or once old if its session never
+	// had a file (opened and closed, or a crash).
+	for (const name of await list(temp)) {
+		for (const id of await list(join(temp, name))) {
+			if (id === keep) continue;
+			const has = await mtime(join(projects, name, "sessions", `${id}.jsonl`));
+			const old = await older(join(temp, name, id), cutoff);
+			if (deleted.has(join(name, id)) || (has === undefined && old))
+				await gone(join(temp, name, id));
+		}
+		// Only when bare: another window's new session may hold empty folders.
+		if ((await list(join(temp, name))).length === 0)
+			await gone(join(temp, name));
 	}
 
 	const logs = join(dir, "logs");

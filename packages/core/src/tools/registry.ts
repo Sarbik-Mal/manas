@@ -5,10 +5,11 @@ import type { Vault } from "../safety/scrub";
 import type { Answers, Questions } from "./ask";
 import type { Backups } from "./backups";
 import type { ReadRecord } from "./reads";
+import { RESULT_MAX, spill } from "./spill";
 import type { Tasks } from "./tasks";
 
 // What every tool gets. Grows as parts are built: session, ask, vault,
-// backups, scratch, emit (architecture.md 0b, rule 2).
+// backups, emit (architecture.md 0b, rule 2).
 export type ToolCtx = {
 	signal: AbortSignal;
 	// The project folder.
@@ -33,6 +34,10 @@ export type ToolCtx = {
 	// The session's background commands (3.3); without them a timeout stops
 	// the command.
 	tasks?: Tasks;
+	// The session's scratchpad (3.4): its own files, written without asking.
+	scratch?: string;
+	// Where results too big for the conversation are saved (3.4).
+	results?: string;
 };
 // What a session hands every call; `signal` is per turn.
 export type SessionCtx = Omit<ToolCtx, "signal">;
@@ -44,6 +49,8 @@ export type Tool<S extends TSchema = TSchema> = {
 	// Not in the `tools` list sent to OpenAI; reached through call_tool (4.3).
 	deferred: boolean;
 	readOnly: boolean;
+	// A longer result is saved to a file (3.4); 50,000 unless set.
+	maxResultChars?: number;
 	// What the permission engine checks: a shell's command or a file's path.
 	permission?: {
 		command?: (input: Static<S>) => string;
@@ -158,7 +165,16 @@ export async function callTool(
 			return { status: "denied", output: `error: ${err.message}`, stop: true };
 		return error((err as Error).message);
 	}
-	// 6. Return.
+	// 6. Return; a result too big goes to a file, the model gets a preview.
+	// ponytail: each result on its own; Claude Code also budgets a round's
+	// results together, add that if many big parallel results fill the context.
+	if (ctx.results)
+		output = spill(output, {
+			dir: ctx.results,
+			id: callId || crypto.randomUUID(),
+			vault: ctx.vault,
+			max: tool.maxResultChars ?? RESULT_MAX,
+		});
 	return { status: "ok", output };
 }
 

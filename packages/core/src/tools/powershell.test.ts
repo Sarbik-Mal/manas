@@ -199,9 +199,65 @@ test("a timeout or an interrupt stops the command", async () => {
 	expect(Date.now() - start).toBeLessThan(15_000);
 });
 
-test("long output keeps its start and end", () => {
+test("cut keeps the start and end, 10K by default", () => {
 	const out = cut(`${"a".repeat(20_000)}${"b".repeat(20_000)}`);
-	expect(out).toStartWith("a".repeat(15_000));
-	expect(out).toEndWith("b".repeat(15_000));
-	expect(out).toContain("[… 10000 characters cut …]");
+	expect(out).toStartWith(`${"a".repeat(5_000)}\n`);
+	expect(out).toEndWith(`\n${"b".repeat(5_000)}`);
+	expect(out).toContain("[… 30000 characters cut …]");
+});
+
+test("3.4: a failed command's long output is cut, an ok one's is saved to a file", async () => {
+	const results = join(tempRoot(), "tool-results");
+	const ctx = { ...ctxFor(tempRoot()), results };
+	const registry = buildRegistry([powershell]);
+	const run = (command: string) =>
+		callTool(
+			registry,
+			"powershell",
+			JSON.stringify(input(command)),
+			ctx,
+			undefined,
+			"call_9",
+		);
+	const failed = await run("'x' * 40000; exit 3");
+	expect(failed.output.length).toBeLessThan(10_100);
+	expect(failed.output).toContain("characters cut");
+	expect(failed.output).toEndWith("Command failed with exit code 3");
+	expect(existsSync(join(results, "call_9.txt"))).toBe(false);
+
+	const ok = await run('1..5000 | % { "line $_ of a long build log" }');
+	expect(ok.output).toStartWith("<persisted-output>\nOutput too large (");
+	expect(ok.output).toContain(
+		"Preview (first 2KB):\nline 1 of a long build log\n",
+	);
+	const file = readFileSync(join(results, "call_9.txt"), "utf8");
+	expect(file.split("\n")).toHaveLength(5000);
+	expect(file).toEndWith("line 5000 of a long build log");
+}, 30_000);
+
+test("read never spills; a short result is unchanged", async () => {
+	const cwd = tempRoot();
+	const results = join(cwd, "tool-results");
+	writeFileSync(join(cwd, "big.txt"), "y".repeat(60_000));
+	const { read } = await import("./files");
+	const ctx = { ...ctxFor(cwd), results };
+	const r = await callTool(
+		buildRegistry([read, powershell]),
+		"read",
+		JSON.stringify({ file_path: "big.txt", offset: null, limit: null }),
+		ctx,
+		undefined,
+		"c1",
+	);
+	expect(r.output).not.toContain("persisted-output");
+	const short = await callTool(
+		buildRegistry([powershell]),
+		"powershell",
+		JSON.stringify(input("'hi'")),
+		ctx,
+		undefined,
+		"c2",
+	);
+	expect(short.output).toBe("hi");
+	expect(existsSync(results)).toBe(false);
 });

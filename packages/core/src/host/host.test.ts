@@ -34,6 +34,7 @@ function connect(
 	const out: Msg[] = [];
 	const host = createHost((line) => out.push(JSON.parse(line)), {
 		root,
+		temp: join(root, "tmp"),
 		...extra,
 	});
 	let n = 0;
@@ -1337,4 +1338,64 @@ test("a background command: listed, stopped by id, and its end starts a turn by 
 	});
 	expect(c.send("tasks/background").result).toEqual({ moved: 0 });
 	c.host.close();
+});
+
+test("3.4: a big result is saved beside the session; scratchpad writes don't ask; an empty scratchpad goes at close", async () => {
+	const root = tempRoot();
+	const big = defineTool({
+		name: "big",
+		description: "big",
+		schema: Type.Object({}, { additionalProperties: false }),
+		deferred: false,
+		readOnly: true,
+		run: async () => `${"q".repeat(60_000)}\nend`,
+	});
+	const write = defineTool({
+		name: "write",
+		description: "write",
+		schema: Type.Object(
+			{ path: Type.String() },
+			{ additionalProperties: false },
+		),
+		deferred: false,
+		readOnly: false,
+		permission: { path: (i) => i.path },
+		run: async ({ path }) => `wrote ${path}`,
+	});
+	const c = connect(root, { tools: [big, write] });
+	await c.ready(tempRoot());
+	fake.replies.push({ items: [call("big", {})] }, say("seen"));
+	c.send("session/prompt", { text: "go" });
+	await c.waitFor(() => c.events("turn/finished").length === 1);
+	const sentText = sent();
+	const pad = /Scratchpad directory: (.+?) — always use it/.exec(
+		JSON.parse(`"${/Scratchpad directory: [^"]+/.exec(sentText)?.[0]}"`),
+	)?.[1] as string;
+	expect(existsSync(pad)).toBe(true);
+	expect(pad).toStartWith(join(root, "tmp"));
+	expect(c.events("tool/finished")[0].output).toStartWith(
+		"<persisted-output>\nOutput too large (58.6KB). Full output saved to: ",
+	);
+	const file = /saved to: (.+\.txt)/.exec(
+		c.events("tool/finished")[0].output,
+	)?.[1] as string;
+	expect(file).toContain(
+		join(
+			"sessions",
+			String(c.events("session/started")[0].session_id),
+			"tool-results",
+		),
+	);
+	expect(readFileSync(file, "utf8")).toEndWith("\nend");
+
+	fake.replies.push(
+		{ items: [call("write", { path: join(pad, "helper.ps1") })] },
+		say("done"),
+	);
+	c.send("session/prompt", { text: "write a helper" });
+	await c.waitFor(() => c.events("turn/finished").length === 2);
+	expect(asked(c)).toEqual([]);
+	expect(c.events("tool/finished")[1]).toMatchObject({ status: "ok" });
+	c.host.close();
+	expect(existsSync(pad)).toBe(false);
 });

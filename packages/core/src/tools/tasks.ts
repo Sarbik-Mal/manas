@@ -32,6 +32,7 @@ type Task = TaskInfo & {
 	kill: () => void;
 	stopping: boolean;
 	silent: boolean;
+	tooBig: boolean;
 	pending: string; // the line not yet ended, written once it is
 	tail: string; // the last output, for the stall notice
 	size: number;
@@ -67,12 +68,15 @@ export function openTasks({
 	notify,
 	finished = () => {},
 	stall = { every: 5_000, quiet: 45_000 },
+	outputMax = 5 * 1024 ** 3,
 }: {
 	dir: string; // this session's tasks folder
 	vault: Vault;
 	notify: (text: string) => void; // to the model
 	finished?: (f: Finished) => void; // to front ends
 	stall?: { every: number; quiet: number };
+	// Past this a command is killed, as in Claude Code (5 GB).
+	outputMax?: number;
 }) {
 	const tasks = new Map<string, Task>();
 	const foreground = new Set<(reason: Reason) => void>();
@@ -80,9 +84,14 @@ export function openTasks({
 	// Whole lines only, scrubbed, so a secret never reaches the disk and a
 	// pattern isn't split across two writes.
 	const write = (t: Task, text: string, end = false) => {
-		if (t.silent) return;
+		if (t.silent || t.tooBig) return;
 		t.pending += text.replace(/\r\n/g, "\n");
 		t.size += text.length;
+		if (t.size > outputMax && t.status === "running") {
+			t.tooBig = true;
+			t.stopping = true;
+			t.kill();
+		}
 		const cut = end ? t.pending.length : t.pending.lastIndexOf("\n") + 1;
 		if (cut === 0) return;
 		const clean = scrub(t.pending.slice(0, cut), vault).text;
@@ -134,6 +143,7 @@ export function openTasks({
 				kill,
 				stopping: false,
 				silent: false,
+				tooBig: false,
 				pending: "",
 				tail: "",
 				size: 0,
@@ -170,7 +180,7 @@ export function openTasks({
 				if (t.silent) return;
 				const summary =
 					t.status === "killed"
-						? `${desc} was stopped`
+						? `${desc} was stopped${t.tooBig ? ": its output passed 5 GB" : ""}`
 						: t.status === "failed"
 							? `${desc} failed with exit code ${code}`
 							: `${desc} completed (exit code ${code}${note ? `: ${note}` : ""})`;

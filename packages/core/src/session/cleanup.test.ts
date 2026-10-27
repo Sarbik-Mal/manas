@@ -41,7 +41,9 @@ test("the 2.9 check: an old session goes with its vault and backups; blobs, logs
 	put(join(dir, "logs", "debug-2026-01-01.jsonl"), 40);
 	put(join(dir, "logs", "debug-today.jsonl"), 0);
 
-	expect(await sweep({ dir, days: 30, keep: "open", now })).toEqual({
+	expect(
+		await sweep({ dir, temp: join(dir, "tmp"), days: 30, keep: "open", now }),
+	).toEqual({
 		sessions: 3,
 		blobs: 3,
 		logs: 1,
@@ -75,12 +77,23 @@ test("the 2.9 check: an old session goes with its vault and backups; blobs, logs
 
 test("once a day: a second sweep within 24 h does nothing", async () => {
 	const dir = tempRoot();
-	expect(await sweep({ dir, days: 30, now })).toBeDefined();
+	expect(
+		await sweep({ dir, temp: join(dir, "tmp"), days: 30, now }),
+	).toBeDefined();
 	const old = join(dir, "projects", "e--a", "sessions", "s.jsonl");
 	put(old, 40);
-	expect(await sweep({ dir, days: 30, now: now + DAY / 2 })).toBeUndefined();
+	expect(
+		await sweep({ dir, temp: join(dir, "tmp"), days: 30, now: now + DAY / 2 }),
+	).toBeUndefined();
 	expect(existsSync(old)).toBe(true);
-	expect(await sweep({ dir, days: 30, now: now + DAY + 1000 })).toMatchObject({
+	expect(
+		await sweep({
+			dir,
+			temp: join(dir, "tmp"),
+			days: 30,
+			now: now + DAY + 1000,
+		}),
+	).toMatchObject({
 		sessions: 1,
 	});
 });
@@ -103,7 +116,9 @@ test("a locked session is skipped and tried again next time; the rest are cleane
 		{ stdout: "pipe" },
 	);
 	await ps.stdout.getReader().read(); // "held"
-	expect(await sweep({ dir, days: 30, now })).toMatchObject({
+	expect(
+		await sweep({ dir, temp: join(dir, "tmp"), days: 30, now }),
+	).toMatchObject({
 		sessions: 1,
 		failed: 1,
 	});
@@ -111,9 +126,42 @@ test("a locked session is skipped and tried again next time; the rest are cleane
 	expect(existsSync(join(sessions, "locked", "vault.bin"))).toBe(true);
 	expect(existsSync(join(sessions, "other.jsonl"))).toBe(false);
 	await ps.exited;
-	expect(await sweep({ dir, days: 30, now: now + 2 * DAY })).toMatchObject({
+	expect(
+		await sweep({ dir, temp: join(dir, "tmp"), days: 30, now: now + 2 * DAY }),
+	).toMatchObject({
 		sessions: 1,
 		failed: 0,
 	});
 	expect(existsSync(join(sessions, "locked"))).toBe(false);
 }, 15_000);
+
+test("3.4: a session's temp folder goes with it; a new one without a file stays", async () => {
+	const dir = tempRoot();
+	const temp = join(dir, "tmp");
+	const age = (p: string, days: number) => {
+		const t = (now - days * DAY) / 1000;
+		utimesSync(p, t, t);
+	};
+	put(join(dir, "projects", "e--a", "sessions", "old.jsonl"), 40);
+	put(join(temp, "e--a", "old", "scratchpad", "notes.md"), 1);
+	put(join(dir, "projects", "e--a", "sessions", "new.jsonl"), 2);
+	put(join(temp, "e--a", "new", "scratchpad", "x.ps1"), 2);
+	mkdirSync(join(temp, "e--a", "fresh", "scratchpad"), { recursive: true });
+	put(join(temp, "e--a", "orphan", "tasks", "b1.output"), 40);
+	age(join(temp, "e--a", "orphan"), 40);
+	put(join(temp, "e--gone", "lost", "scratchpad", "y.txt"), 40);
+	age(join(temp, "e--gone", "lost"), 40);
+
+	await sweep({ dir, temp, days: 30, now });
+	for (const gone of [
+		join(temp, "e--a", "old"),
+		join(temp, "e--a", "orphan"),
+		join(temp, "e--gone"),
+	])
+		expect([gone, existsSync(gone)]).toEqual([gone, false]);
+	for (const kept of [
+		join(temp, "e--a", "new", "scratchpad", "x.ps1"),
+		join(temp, "e--a", "fresh", "scratchpad"),
+	])
+		expect([kept, existsSync(kept)]).toEqual([kept, true]);
+});

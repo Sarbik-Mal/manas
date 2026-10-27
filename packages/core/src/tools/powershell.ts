@@ -19,9 +19,17 @@ export const EDITION = IS_51
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_TIMEOUT_MS = 600_000;
-// ponytail: longer output is cut in the middle; 3.4 saves it to a file in
-// the scratchpad and returns a preview plus the path.
-const MAX_OUTPUT = 30_000;
+// Inline up to this, else saved to a file (spill.ts); `shellOutputMaxChars`
+// changes it. A failed command gets a 10K head and tail instead, no file.
+export const SHELL_OUTPUT_MAX = 30_000;
+const FAILED_MAX = 10_000;
+// Past 5 GB a command is killed (Claude Code's cap); only the first 64 MiB is
+// kept in memory, all a spill file holds.
+// ponytail: so a failed command past 64 MiB has no real end in its excerpt;
+// keep a rolling tail too if such outputs come up. The kill's text is ours:
+// Claude Code's wasn't found in its exe.
+export const OUTPUT_KILL = 5 * 1024 ** 3;
+const KEEP = 64 * 1024 ** 2;
 
 // The script travels in an environment variable, not on the command line
 // (-EncodedCommand fails past ~12K characters); the launcher clears it so
@@ -72,7 +80,7 @@ export function fromClixml(s: string) {
 		.replace(/&amp;/g, "&");
 }
 
-export function cut(text: string, max = MAX_OUTPUT) {
+export function cut(text: string, max = FAILED_MAX) {
 	if (text.length <= max) return text;
 	const half = Math.floor(max / 2);
 	return `${text.slice(0, half)}\n[… ${text.length - 2 * half} characters cut …]\n${text.slice(-half)}`;
@@ -227,7 +235,9 @@ Several commands: independent ones as separate calls in parallel; dependent ones
 
 Git: prefer a new commit to amending one. Before a destructive operation (reset --hard, push --force, checkout --), look for a safer way. Never skip hooks (--no-verify) or signing unless the user asks; if a hook fails, fix the cause. Commit or push only when the user asks.
 
-Timeout: ${DEFAULT_TIMEOUT_MS / 60_000} minutes unless set (at most ${MAX_TIMEOUT_MS / 60_000}). A command still running at its timeout moves to the background (a Start-Sleep is stopped instead), and you get its ID and output file. Output over ${MAX_OUTPUT} characters is cut in the middle.
+Timeout: ${DEFAULT_TIMEOUT_MS / 60_000} minutes unless set (at most ${MAX_TIMEOUT_MS / 60_000}). A command still running at its timeout moves to the background (a Start-Sleep is stopped instead), and you get its ID and output file. Long output is saved to a file: you get its path and the first 2,000 characters; read or grep the file for the rest. A failed command's long output is cut to its start and end.
+
+Temporary files (intermediate results, helper scripts, outputs that don't belong in the project) go in the scratchpad directory named in the environment, not the system temp folder.
 
 You can use run_in_background to run a command in the background. Only use this if you don't need the result immediately and are OK being notified when the command completes later. You do not need to check the output right away - you'll be notified when it finishes. Stop a background command with task_stop.
 
@@ -250,6 +260,7 @@ Avoid unnecessary Start-Sleep: don't sleep between commands that can run immedia
 	),
 	deferred: false,
 	readOnly: false,
+	maxResultChars: SHELL_OUTPUT_MAX,
 	permission: { command: (i) => i.command },
 	title: (i) => i.description ?? i.command,
 	// ponytail: /rewind can't undo what a command changes until 3.6 records
@@ -294,22 +305,31 @@ Avoid unnecessary Start-Sleep: don't sleep between commands that can run immedia
 		let out = "";
 		let err = "";
 		let feed: ((s: string) => void) | undefined;
+		let bytes = 0;
+		let tooBig = false;
 		const pump = async (
 			stream: ReadableStream<Uint8Array>,
 			add: (s: string) => void,
 		) => {
 			const decoder = new TextDecoder();
 			const take = (s: string) => (feed ? feed(s) : add(s));
-			for await (const chunk of stream)
+			for await (const chunk of stream) {
+				// In the background the task counts instead.
+				bytes += chunk.length;
+				if (!feed && !tooBig && bytes > OUTPUT_KILL) {
+					tooBig = true;
+					kill();
+				}
 				take(decoder.decode(chunk, { stream: true }));
+			}
 			take(decoder.decode());
 		};
 		const exited = Promise.all([
 			pump(p.stdout, (s) => {
-				out += s;
+				if (out.length < KEEP) out += s;
 			}),
 			pump(p.stderr, (s) => {
-				err += s;
+				if (err.length < KEEP) err += s;
 			}),
 			p.exited,
 		]).then(([, , code]) => code);
@@ -364,10 +384,13 @@ Avoid unnecessary Start-Sleep: don't sleep between commands that can run immedia
 		ctx.signal.removeEventListener("abort", kill);
 		const code = await exited;
 		const parts = [out.trimEnd(), fromClixml(err).trimEnd()].filter(Boolean);
-		if (timedOut)
+		let failed = true;
+		if (tooBig) parts.push("Command was stopped: its output passed 5 GB.");
+		else if (timedOut)
 			parts.push(`Command timed out after ${ms / 1000} s and was stopped.`);
 		else {
 			const m = await meaning(command, code);
+			failed = m.failed;
 			if (m.failed) parts.push(`Command failed with exit code ${code}`);
 			else if (m.note) parts.push(m.note);
 		}
@@ -380,6 +403,8 @@ Avoid unnecessary Start-Sleep: don't sleep between commands that can run immedia
 				parts.push(`Shell cwd was reset to ${ctx.cwd}`);
 			}
 		}
-		return cut(parts.join("\n").replace(/\r\n/g, "\n") || "(no output)");
+		const text = parts.join("\n").replace(/\r\n/g, "\n") || "(no output)";
+		// An ok result comes back whole; callTool spills it if it's long.
+		return failed ? cut(text) : text;
 	},
 });

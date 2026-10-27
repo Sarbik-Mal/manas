@@ -32,9 +32,10 @@ const URL_PASSWORD =
 
 // `name = value`, `name: value`, `"name": "value"`, `NAME=value`, where the name
 // ends a segment with a secret word. A type annotation (`password: str = "x"`)
-// is skipped; `==` is a comparison, not an assignment.
+// is skipped; `==` is a comparison, not an assignment. The name starts a
+// token (the lookbehind): without it a long unbroken line took seconds.
 const ASSIGN =
-	/(?<key>[\w.-]*?(?<kw>password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|account[_-]?key)(?:[_.-][\w.-]*)?["']?\s*(?::\s*[\w.[\]| ]+?\s*)?[:=](?!=)\s*)(?:(?<q>["'])(?<qval>[^"'\n]*)\k<q>|(?<bare>[^\s"',;#)\]}]+))/gi;
+	/(?<key>(?<![\w.-])[\w.-]*?(?<kw>password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|account[_-]?key)(?:[_.-][\w.-]*)?["']?\s*(?::\s*[\w.[\]| ]+?\s*)?[:=](?!=)\s*)(?:(?<q>["'])(?<qval>[^"'\n]*)\k<q>|(?<bare>[^\s"',;#)\]}]+))/gi;
 
 export const PLACEHOLDER = /\[REDACTED:[a-z_]+(?:#\d+)?\]/g;
 const SWEEP_MIN_LENGTH = 6;

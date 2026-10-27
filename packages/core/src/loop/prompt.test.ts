@@ -33,6 +33,10 @@ test("the first message: environment plus a git snapshot, the same bytes twice",
 	expect(text).toStartWith("<environment>\nToday's date: 2026-10-26\nOS: ");
 	expect(text).toContain(`Shell: ${EDITION} (the powershell tool)`);
 	expect(text).toContain(`Working directory: ${cwd}`);
+	expect(text).not.toContain("Scratchpad");
+	expect(firstMessage(cwd, "2026-10-26", "C:\\pad")).toContain(
+		`Working directory: ${cwd}\nScratchpad directory: C:\\pad — always use it for temporary files`,
+	);
 	expect(text).toContain("Current branch: main\nMain branch: main");
 	expect(text).toContain("Status:\n?? b.txt");
 	expect(text).toMatch(
