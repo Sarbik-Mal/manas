@@ -1,11 +1,28 @@
 // Slash commands of the plain CLI. Anything else starting with "/" is
 // unknown, and never sent to the model.
 export type Command =
-	| { name: "help" | "exit" | "clear" | "doctor" | "resume" | "rewind" }
+	| {
+			name:
+				| "help"
+				| "exit"
+				| "clear"
+				| "doctor"
+				| "resume"
+				| "rewind"
+				| "tasks";
+	  }
 	| { name: "model" | "effort" | "mode"; arg?: string }
 	| { name: "unknown"; text: string };
 
-const SIMPLE = new Set(["help", "exit", "clear", "doctor", "resume", "rewind"]);
+const SIMPLE = new Set([
+	"help",
+	"exit",
+	"clear",
+	"doctor",
+	"resume",
+	"rewind",
+	"tasks",
+]);
 
 // undefined: the line is a prompt, not a command.
 export function parseCommand(line: string): Command | undefined {
@@ -27,6 +44,7 @@ export const HELP = `Keys
   Ctrl+C         clear the input, or stop the reply; twice to quit
   Ctrl+D         quit (on an empty input)
   Shift+Tab      switch mode: vibe-check (asks before edits) / lowkey
+  Ctrl+B         move the running command to the background
 
 Commands
   /model [name]     show or switch the model
@@ -35,6 +53,7 @@ Commands
   /clear            start a new conversation
   /resume           pick a saved conversation to continue
   /rewind           go back to an earlier prompt: code, conversation or both
+  /tasks            list background commands, and stop one
   /doctor           check the setup
   /help             this help
   /exit             quit`;

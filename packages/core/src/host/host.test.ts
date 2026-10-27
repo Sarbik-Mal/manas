@@ -707,6 +707,7 @@ test("the real tools run in the session's folder, and a Read deny filters grep",
 		"grep",
 		"glob",
 		"powershell",
+		"task_stop",
 	]);
 	c.send("session/prompt", { text: "look around" });
 	await c.waitFor(() => c.events("turn/finished").length === 1);
@@ -1292,4 +1293,48 @@ test("with cleanup, the sweep runs once a session opens and never takes that ses
 	await b.waitFor(() => !existsSync(other));
 	expect(existsSync(file)).toBe(true);
 	expect(existsSync(join(dir, ".last-cleanup"))).toBe(true);
+});
+
+test("a background command: listed, stopped by id, and its end starts a turn by itself (3.3)", async () => {
+	const c = connect(undefined, { tools: coreTools() });
+	await c.ready(tempRoot());
+	fake.replies.push(
+		{
+			items: [
+				call("powershell", {
+					command: "Write-Output hi",
+					description: "Say hi",
+					timeout: null,
+					run_in_background: true,
+				}),
+			],
+		},
+		say("started"),
+		say("it said hi"),
+	);
+	c.send("session/prompt", { text: "go" });
+	const until = async (ok: () => boolean) => {
+		for (let i = 0; i < 400 && !ok(); i++) await Bun.sleep(50);
+		expect(ok()).toBe(true);
+	};
+	await until(() => c.events("task/finished").length === 1);
+	expect(c.events("task/finished")[0]).toMatchObject({
+		task_id: expect.stringMatching(/^b[0-9a-f]{6}$/),
+		status: "completed",
+		summary: 'Background command "Say hi" completed (exit code 0)',
+	});
+	// The notice turn: a second turn/finished with no prompt typed.
+	await until(() => c.events("turn/finished").length === 2);
+	const notice = fake.bodies.at(-1)?.input.at(-1) as { content: string };
+	expect(notice.content).toContain("<task-notification>");
+	const listed = c.send("tasks/list").result as { tasks: object[] };
+	expect(listed.tasks).toMatchObject([
+		{ description: "Say hi", command: "Write-Output hi", status: "completed" },
+	]);
+	expect(c.send("tasks/stop", { task_id: "bnope00" }).result).toEqual({
+		stopped: false,
+		text: "No task found with ID: bnope00",
+	});
+	expect(c.send("tasks/background").result).toEqual({ moved: 0 });
+	c.host.close();
 });

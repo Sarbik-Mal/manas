@@ -64,6 +64,13 @@ function summary(name: string, input: unknown, output: string) {
 	return undefined;
 }
 
+// `  ⎿ Background command "Build" completed (exit code 0)`: a background
+// command ended (3.3). Failed in red, stopped dim like the rest.
+export function taskFinished(status: string, summary: string, st: Style) {
+	const row = `  ${sym(st).result} ${summary}`;
+	return status === "failed" ? red(row, st) : dim(row, st);
+}
+
 // `  ⎿ ok · first line` under the tool row (a count for searches and reads);
 // errors in red.
 export function toolFinished(

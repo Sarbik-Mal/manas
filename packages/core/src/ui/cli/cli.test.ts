@@ -555,3 +555,39 @@ test("Esc on a question declines it, which stops the turn", async () => {
 	await cli.type("/exit\r");
 	await cli.exited;
 });
+
+test("Ctrl+B moves a running command to the background; /tasks lists and stops it (3.3)", async () => {
+	const cli = startCli({ tools: coreTools(), cwd: tempRoot() });
+	replies.push(
+		{
+			items: [
+				call("powershell", {
+					command: "ping -n 30 127.0.0.1",
+					description: "Ping a lot",
+					timeout: null,
+					run_in_background: null,
+				}),
+			],
+		},
+		say("it runs on"),
+		say("noted the stop"),
+	);
+	await cli.type("ping\r");
+	await cli.shows("Choose 1-3: ");
+	cli.input.write("1\r");
+	await Bun.sleep(1500);
+	cli.input.write("\x02");
+	await cli.shows("it runs on");
+	expect(outputs().at(-1)).toStartWith(
+		"Command was manually backgrounded by user with ID: b",
+	);
+	await cli.type("/tasks\r");
+	await cli.shows("1. Ping a lot");
+	await cli.shows("Stop which?");
+	cli.input.write("1\r");
+	await cli.shows("Successfully stopped task: b");
+	await cli.shows('⎿ Background command "Ping a lot" was stopped');
+	await cli.shows("noted the stop");
+	await cli.type("/exit\r");
+	await cli.exited;
+}, 30_000);

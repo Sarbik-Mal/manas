@@ -22,6 +22,7 @@ type Response = {
 const ESC = "\x1b";
 const CTRL_C = "\x03";
 const SHIFT_TAB = "\x1b[Z";
+const CTRL_B = "\x02";
 const QUIT_WINDOW_MS = 2000;
 const DOUBLE_ESC_MS = 600;
 
@@ -190,6 +191,10 @@ export async function runCli({
 			case "turn/finished":
 				if (e.stop_reason === "interrupted") say(r.interrupted(style));
 				return;
+			case "task/finished":
+				return say(
+					r.taskFinished(e.status as string, e.summary as string, style),
+				);
 			case "notice":
 				return say(r.notice(e.level as string, e.text as string, style));
 			case "state/changed":
@@ -198,7 +203,13 @@ export async function runCli({
 					say(r.modeSwitched(mode, style));
 					redraw?.();
 				}
-				if (e.state === "idle") onIdle?.();
+				if (e.state === "idle") {
+					onIdle?.();
+					// ponytail: a turn a background notice started while typing
+					// prints over the input; the prompt comes back when it ends.
+					// The Ink screen (M10) gives it its own area.
+					if (!inTurn) redraw?.();
+				}
 				return;
 		}
 	}
@@ -314,6 +325,7 @@ export async function runCli({
 			if (asking) return;
 			const key = chunk.toString();
 			if (key === SHIFT_TAB) return cycleMode();
+			if (key === CTRL_B) return void request("tasks/background");
 			if (key === CTRL_C && secondCtrlC()) quitting = true;
 			if (key === ESC || key === CTRL_C) void request("session/interrupt");
 		};
@@ -473,6 +485,32 @@ export async function runCli({
 			: undefined;
 	};
 
+	// /tasks: the background commands, newest last; pick one to stop it.
+	const stopTask = async () => {
+		const tasks = ((await request("tasks/list")).result?.tasks ?? []) as {
+			task_id: string;
+			description: string;
+			status: string;
+		}[];
+		if (tasks.length === 0) {
+			say("No background commands.");
+			return;
+		}
+		say(
+			tasks
+				.map(
+					(t, i) =>
+						`  ${i + 1}. ${t.description} ${r.dim(`(${t.task_id}, ${t.status})`, style)}`,
+				)
+				.join("\n"),
+		);
+		const n = Number(await ask("Stop which? (number, Enter to cancel): "));
+		const task = Number.isInteger(n) ? tasks[n - 1] : undefined;
+		if (!task) return;
+		const res = await request("tasks/stop", { task_id: task.task_id });
+		say(res.result?.text as string);
+	};
+
 	// /rewind: pick a prompt, see what the code restore would change, pick an
 	// action. Returns the prompt to put back in the input, if the
 	// conversation was rewound.
@@ -618,6 +656,9 @@ export async function runCli({
 			}
 			case "rewind":
 				prefill = await rewind();
+				break;
+			case "tasks":
+				await stopTask();
 				break;
 			case "doctor": {
 				const { lines } = await doctor();

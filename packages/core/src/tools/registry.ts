@@ -5,6 +5,7 @@ import type { Vault } from "../safety/scrub";
 import type { Answers, Questions } from "./ask";
 import type { Backups } from "./backups";
 import type { ReadRecord } from "./reads";
+import type { Tasks } from "./tasks";
 
 // What every tool gets. Grows as parts are built: session, ask, vault,
 // backups, scratch, emit (architecture.md 0b, rule 2).
@@ -29,6 +30,9 @@ export type ToolCtx = {
 	ask?: (questions: Questions, callId: string) => Promise<Answers | null>;
 	// This call's id, so a question can be tied to its tool row.
 	callId?: string;
+	// The session's background commands (3.3); without them a timeout stops
+	// the command.
+	tasks?: Tasks;
 };
 // What a session hands every call; `signal` is per turn.
 export type SessionCtx = Omit<ToolCtx, "signal">;

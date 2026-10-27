@@ -35,6 +35,8 @@ export type LoopEvent =
 	  };
 
 const INTERRUPTED = "interrupted by user";
+const asItem = (p: string | ResponseInputItem): ResponseInputItem =>
+	typeof p === "string" ? { role: "user", content: p } : p;
 const note: ResponseInputItem = {
 	role: "developer",
 	content: `[${INTERRUPTED}]`,
@@ -43,10 +45,11 @@ const note: ResponseInputItem = {
 // One user prompt: model → tool calls → results → model, until the model stops
 // calling tools or `signal` aborts. `history` is only ever appended to, so the
 // prompt cache prefix never changes. `inject` hands over prompts sent during
-// the turn; they join between rounds, after the tool results.
+// the turn; they join between rounds, after the tool results. A prompt is the
+// user's text, or an item such as a background task's notice (3.3).
 export async function* runTurn(
 	history: ResponseInputItem[],
-	prompt: string,
+	prompt: string | ResponseInputItem,
 	{
 		registry = buildRegistry([]),
 		signal = new AbortController().signal,
@@ -67,7 +70,7 @@ export async function* runTurn(
 		verbosity?: string;
 		registry?: Registry;
 		signal?: AbortSignal;
-		inject?: () => string[];
+		inject?: () => (string | ResponseInputItem)[];
 		permit?: Permit;
 		// What every tool call gets besides the signal.
 		ctx?: SessionCtx;
@@ -76,7 +79,7 @@ export async function* runTurn(
 	const usage: Usage = { input: 0, cached: 0, output: 0, reasoning: 0 };
 	const finish = (stopReason: "done" | "interrupted") =>
 		({ type: "turn_finished", stopReason, usage }) as const;
-	history.push({ role: "user", content: prompt });
+	history.push(asItem(prompt));
 	while (true) {
 		let text = "";
 		let output: ResponseInputItem[];
@@ -187,6 +190,6 @@ export async function* runTurn(
 			yield finish("interrupted");
 			return;
 		}
-		for (const text of inject()) history.push({ role: "user", content: text });
+		for (const p of inject()) history.push(asItem(p));
 	}
 }

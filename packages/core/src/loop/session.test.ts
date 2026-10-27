@@ -12,7 +12,7 @@ import {
 	say,
 	tempRoot,
 } from "../testing/fake-openai";
-import { type Backups, openBackups } from "../tools/backups";
+import { openBackups } from "../tools/backups";
 import { edit } from "../tools/edit";
 import { read } from "../tools/files";
 import { readRecord } from "../tools/reads";
@@ -39,7 +39,7 @@ const gate = defineTool({
 		}),
 });
 
-function start(extra: { backups?: Backups } = {}) {
+function start(extra: Partial<Parameters<typeof createSession>[0]> = {}) {
 	const events: SessionEvent[] = [];
 	const session = createSession({
 		registry: buildRegistry([gate]),
@@ -111,6 +111,54 @@ test("`next` joins the running turn after its tools; `later` waits for the turn"
 	expect(order.indexOf(next)).toBeGreaterThan(order.indexOf("tool_finished"));
 	expect(order.indexOf(later)).toBeGreaterThan(order.indexOf("turn_finished"));
 	expect(events.filter((e) => e.type === "idle")).toHaveLength(1);
+});
+
+test("a background task's notice starts a turn when idle, joins a running one between rounds", async () => {
+	const { session, events, waitFor, idles, has } = start();
+	replies.push(say("noted"));
+	session.notify("<task-notification>a</task-notification>");
+	await waitFor(idles(1));
+	expect(bodies[0].input.at(-1)).toEqual({
+		role: "developer",
+		content: "<task-notification>a</task-notification>",
+	});
+	// No prompt_delivered: the user didn't type it.
+	expect(events.some((e) => e.type === "prompt_delivered")).toBe(false);
+	replies.push({ items: [call("gate", {})] }, say("after"));
+	session.prompt("go");
+	await waitFor(has("tool_started"));
+	session.notify("<task-notification>b</task-notification>");
+	open();
+	await waitFor(idles(2));
+	expect(bodies[2].input.at(-1)).toEqual({
+		role: "developer",
+		content: "<task-notification>b</task-notification>",
+	});
+});
+
+test("a message sent while a tool runs moves running commands to the background", async () => {
+	const moved: string[] = [];
+	const tasks = { backgroundAll: (r: string) => moved.push(r) };
+	const { session, waitFor, idles, has } = start({
+		toolCtx: {
+			cwd: ".",
+			shell: { cwd: "." },
+			denied: () => undefined,
+			reads: readRecord(),
+			vault: new Vault(),
+			backups: undefined as never,
+			tasks: tasks as never,
+		},
+	});
+	replies.push({ items: [call("gate", {})] }, say("done"));
+	session.prompt("go");
+	await waitFor(has("tool_started"));
+	session.prompt("later one", "later");
+	expect(moved).toEqual([]);
+	session.prompt("hey");
+	expect(moved).toEqual(["message"]);
+	open();
+	await waitFor(idles(1));
 });
 
 test("a checkpoint when each turn starts; a prompt folded into a turn gets none", async () => {

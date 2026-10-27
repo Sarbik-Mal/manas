@@ -113,6 +113,11 @@ export const Requests = {
 			Type.Literal("both"),
 		]),
 	}),
+	// Background commands (3.3): list them, stop one, or move the running
+	// foreground commands to the background (Ctrl+B).
+	"tasks/list": Type.Object({}),
+	"tasks/stop": Type.Object({ task_id: Type.String() }),
+	"tasks/background": Type.Object({}),
 };
 const Mode = Type.Union([Type.Literal("manual"), Type.Literal("acceptEdits")]);
 // What "Yes, and don't ask again" does: add rules to a settings file (or the
@@ -127,6 +132,12 @@ const Suggestion = Type.Union([
 		]),
 	}),
 	Type.Object({ mode: Type.Literal("acceptEdits") }),
+]);
+const TaskStatus = Type.Union([
+	Type.Literal("running"),
+	Type.Literal("completed"),
+	Type.Literal("failed"),
+	Type.Literal("killed"),
 ]);
 const ModelState = Type.Object({
 	model: Type.String(),
@@ -195,6 +206,20 @@ export const Results = {
 			Type.Object({ path: Type.String(), error: Type.String() }),
 		),
 	}),
+	"tasks/list": Type.Object({
+		tasks: Type.Array(
+			Type.Object({
+				task_id: Type.String(),
+				description: Type.String(),
+				command: Type.String(),
+				status: TaskStatus,
+				started: Type.String(),
+			}),
+		),
+	}),
+	// `text` as the model would see it ("Successfully stopped task: …").
+	"tasks/stop": Type.Object({ stopped: Type.Boolean(), text: Type.String() }),
+	"tasks/background": Type.Object({ moved: Type.Integer() }),
 };
 
 export const Usage = Type.Object({
@@ -307,6 +332,13 @@ export const Events = {
 			Type.Literal("interrupted"),
 			Type.Literal("error"),
 		]),
+	}),
+	// A background command ended or was stopped; the model gets a notice too.
+	"task/finished": Type.Object({
+		task_id: Type.String(),
+		status: TaskStatus,
+		summary: Type.String(),
+		output_file: Type.String(),
 	}),
 	// A turn ending isn't the session ending: wait for `idle` (rule 4).
 	"state/changed": Type.Object({

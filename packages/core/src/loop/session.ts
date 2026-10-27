@@ -28,7 +28,13 @@ export type SessionEvent =
 			error?: string;
 	  };
 
-type Queued = { id: string; text: string; priority: Priority };
+// A prompt, or a notice the core adds (a background task ended, 3.3).
+type Queued = {
+	id: string;
+	text: string;
+	priority: Priority;
+	notice?: boolean;
+};
 
 // A point /rewind can go back to: a prompt, or the undo (or redo) of the
 // last code rewind, which holds code only.
@@ -114,9 +120,10 @@ export function createSession({
 	let turns = 0;
 	let messages = 0;
 
-	const deliver = (q: Queued) => {
+	const deliver = (q: Queued): ResponseInputItem => {
+		if (q.notice) return { role: "developer", content: q.text };
 		emit({ type: "prompt_delivered", promptId: q.id, text: q.text });
-		return q.text;
+		return { role: "user", content: q.text };
 	};
 	const takeNext = () => {
 		const next = queue.filter((q) => q.priority === "next");
@@ -126,6 +133,13 @@ export function createSession({
 	const stop = () => {
 		running?.abort();
 		onInterrupt();
+	};
+	const start = () => {
+		if (!running) {
+			queueMicrotask(() => {
+				if (!running && queue.length > 0) void pump();
+			});
+		}
 	};
 
 	// Runs turns until the queue is empty.
@@ -219,13 +233,19 @@ export function createSession({
 				if (running) stop();
 			} else {
 				queue.push(q);
+				// A running command goes to the background so the message gets
+				// through now, as in Claude Code (3.3).
+				if (running && priority === "next")
+					toolCtx?.tasks?.backgroundAll("message");
 			}
-			if (!running) {
-				queueMicrotask(() => {
-					if (!running && queue.length > 0) void pump();
-				});
-			}
+			start();
 			return q.id;
+		},
+		// Joins the running turn between rounds, or starts one when idle, as
+		// Claude Code delivers its task notifications.
+		notify(text: string) {
+			queue.push({ id: `n${++prompts}`, text, priority: "next", notice: true });
+			start();
 		},
 		// Queued prompts survive and still run, unless `cancelQueued`.
 		interrupt(cancelQueued = false) {

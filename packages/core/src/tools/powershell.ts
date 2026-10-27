@@ -3,9 +3,11 @@ import { readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Type from "typebox";
+import { changesLocation } from "../permissions/checks";
 import { within } from "../permissions/engine";
 import { parsePowerShell } from "../permissions/powershell";
 import { defineTool } from "./registry";
+import type { Reason, Tasks } from "./tasks";
 
 // The PowerShell tool (tools.md §2). Spawned as Claude Code spawns its own.
 
@@ -112,7 +114,7 @@ const FORMATTERS = new Set(
 	),
 );
 
-async function meaning(command: string, code: number): Promise<Meaning> {
+export async function meaning(command: string, code: number): Promise<Meaning> {
 	const plain = { failed: code !== 0 };
 	if (code === 0) return plain;
 	try {
@@ -142,6 +144,28 @@ function endedIn(pwdFile: string) {
 	} finally {
 		rmSync(pwdFile, { force: true });
 	}
+}
+
+// What the model is told when a command goes to the background: Claude
+// Code's texts, one per reason.
+function backgroundText(
+	reason: Reason | "asked",
+	id: string,
+	path: string,
+	ms: number,
+) {
+	const head =
+		reason === "user"
+			? `Command was manually backgrounded by user with ID: ${id}. Output is being written to: ${path}.`
+			: reason === "message"
+				? `Command was moved to the background (ID: ${id}) so that a message that arrived while it was running can reach you; it was not interrupted. Output is being written to: ${path}.`
+				: reason === "timeout"
+					? `Command did not complete within its ${Math.max(1, Math.round(ms / 1000))}s timeout and was moved to the background (ID: ${id}). Output is being written to: ${path}.`
+					: `Command running in background with ID: ${id}. Output is being written to: ${path}.`;
+	if (reason === "user") return head;
+	if (reason === "asked")
+		return `${head} You will be notified when it completes — do not poll that file or sleep while waiting. Use read on that file only if the user asks for progress, or if you need a line it prints before you can go on, such as a server's ready line or port.`;
+	return `${head} You will be notified when it completes. To check interim output, use read on that file path.`;
 }
 
 const SYNTAX_51 = `
@@ -203,7 +227,11 @@ Several commands: independent ones as separate calls in parallel; dependent ones
 
 Git: prefer a new commit to amending one. Before a destructive operation (reset --hard, push --force, checkout --), look for a safer way. Never skip hooks (--no-verify) or signing unless the user asks; if a hook fails, fix the cause. Commit or push only when the user asks.
 
-Timeout: ${DEFAULT_TIMEOUT_MS / 60_000} minutes unless set (at most ${MAX_TIMEOUT_MS / 60_000}). Output over ${MAX_OUTPUT} characters is cut in the middle.`,
+Timeout: ${DEFAULT_TIMEOUT_MS / 60_000} minutes unless set (at most ${MAX_TIMEOUT_MS / 60_000}). A command still running at its timeout moves to the background (a Start-Sleep is stopped instead), and you get its ID and output file. Output over ${MAX_OUTPUT} characters is cut in the middle.
+
+You can use run_in_background to run a command in the background. Only use this if you don't need the result immediately and are OK being notified when the command completes later. You do not need to check the output right away - you'll be notified when it finishes. Stop a background command with task_stop.
+
+Avoid unnecessary Start-Sleep: don't sleep between commands that can run immediately. If waiting for a background task you started with run_in_background, you will be notified when it completes — do not poll.`,
 	schema: Type.Object(
 		{
 			command: Type.String({ description: "The command to run." }),
@@ -212,6 +240,10 @@ Timeout: ${DEFAULT_TIMEOUT_MS / 60_000} minutes unless set (at most ${MAX_TIMEOU
 			}),
 			timeout: Type.Union([Type.Integer({ minimum: 1 }), Type.Null()], {
 				description: `Timeout in milliseconds (at most ${MAX_TIMEOUT_MS}), or null for ${DEFAULT_TIMEOUT_MS}.`,
+			}),
+			run_in_background: Type.Union([Type.Boolean(), Type.Null()], {
+				description:
+					"true to run it in the background (you're notified when it ends), or null to wait for it.",
 			}),
 		},
 		{ additionalProperties: false },
@@ -222,7 +254,10 @@ Timeout: ${DEFAULT_TIMEOUT_MS / 60_000} minutes unless set (at most ${MAX_TIMEOU
 	title: (i) => i.description ?? i.command,
 	// ponytail: /rewind can't undo what a command changes until 3.6 records
 	// changed, deleted and new files around each command.
-	async run({ command, timeout }, ctx) {
+	async run({ command, description, timeout, run_in_background }, ctx) {
+		const { tasks } = ctx;
+		if (run_in_background && !tasks)
+			throw new Error("background commands aren't available here");
 		const ms = Math.min(timeout ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);
 		const pwdFile = join(tmpdir(), `manas-pwd-${randomUUID()}`);
 		const script =
@@ -254,21 +289,80 @@ Timeout: ${DEFAULT_TIMEOUT_MS / 60_000} minutes unless set (at most ${MAX_TIMEOU
 		// The whole tree: a command may have started programs of its own.
 		const kill = () =>
 			Bun.spawnSync(["taskkill", "/T", "/F", "/PID", String(p.pid)]);
+		// Output as it comes: kept here while the call waits, sent to the
+		// task's file once the command is in the background.
+		let out = "";
+		let err = "";
+		let feed: ((s: string) => void) | undefined;
+		const pump = async (
+			stream: ReadableStream<Uint8Array>,
+			add: (s: string) => void,
+		) => {
+			const decoder = new TextDecoder();
+			const take = (s: string) => (feed ? feed(s) : add(s));
+			for await (const chunk of stream)
+				take(decoder.decode(chunk, { stream: true }));
+			take(decoder.decode());
+		};
+		const exited = Promise.all([
+			pump(p.stdout, (s) => {
+				out += s;
+			}),
+			pump(p.stderr, (s) => {
+				err += s;
+			}),
+			p.exited,
+		]).then(([, , code]) => code);
+
+		// In the background the folder never moves (as in Claude Code).
+		const toBackground = async (reason: Reason | "asked") => {
+			ctx.signal.removeEventListener("abort", kill);
+			void exited.then(() => rmSync(pwdFile, { force: true }));
+			const task = (tasks as Tasks).adopt({
+				command,
+				description,
+				callId: ctx.callId ?? "",
+				initial: out + fromClixml(err),
+				kill,
+				ended: exited.then(async (code) => ({
+					code,
+					...(await meaning(command, code)),
+				})),
+			});
+			feed = task.feed;
+			const text = backgroundText(reason, task.id, task.outputFile, ms);
+			const moved = await parsePowerShell(command).then(
+				changesLocation,
+				() => false,
+			);
+			return moved
+				? `${text}\nSession cwd remains ${ctx.shell.cwd}; directory changes made by the backgrounded command do not apply to subsequent commands.`
+				: text;
+		};
+		if (run_in_background) return toBackground("asked");
+
+		// A timeout, Ctrl+B or a message arriving moves the command to the
+		// background; only a sleep is stopped at its timeout, as in Claude Code.
+		let move: (reason: Reason) => void = () => {};
+		const moved = new Promise<Reason>((resolve) => {
+			move = resolve;
+		});
+		const unregister = tasks?.foreground(move);
 		let timedOut = false;
-		// ponytail: a timeout stops the command; 3.3 moves it to the background.
 		const timer = setTimeout(() => {
-			timedOut = true;
-			kill();
+			if (tasks && !/^\s*(start-sleep|sleep)\b/i.test(command)) move("timeout");
+			else {
+				timedOut = true;
+				kill();
+			}
 		}, ms);
 		ctx.signal.addEventListener("abort", kill, { once: true });
-		const [out, err, code] = await Promise.all([
-			new Response(p.stdout).text(),
-			new Response(p.stderr).text(),
-			p.exited,
-		]).finally(() => {
-			clearTimeout(timer);
-			ctx.signal.removeEventListener("abort", kill);
-		});
+		const first = await Promise.race([exited.then(() => undefined), moved]);
+		clearTimeout(timer);
+		unregister?.();
+		if (first !== undefined) return toBackground(first);
+		ctx.signal.removeEventListener("abort", kill);
+		const code = await exited;
 		const parts = [out.trimEnd(), fromClixml(err).trimEnd()].filter(Boolean);
 		if (timedOut)
 			parts.push(`Command timed out after ${ms / 1000} s and was stopped.`);

@@ -1,3 +1,4 @@
+import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import {
 	CoreResults,
@@ -53,6 +54,7 @@ import type { Answers, Questions } from "../tools/ask";
 import { openBackups } from "../tools/backups";
 import { readRecord } from "../tools/reads";
 import { buildRegistry, describeErrors, type Tool } from "../tools/registry";
+import { openTasks, type Tasks } from "../tools/tasks";
 
 type Fail = { code: string; message: string };
 export type SettingsSource = Pick<LiveSettings, "current" | "subscribe">;
@@ -101,6 +103,7 @@ export function createHost(
 	// What the front end said it can do (initialize), e.g. "user_ask".
 	let capabilities: string[] = [];
 	let session: Session | undefined;
+	let tasks: Tasks | undefined;
 	let sessionId: string | null = null;
 	let seq = 0;
 	let lastState: string | undefined;
@@ -370,6 +373,28 @@ export function createHost(
 			}
 			return { ...r, prompt: r.prompt === null ? null : show(r.prompt) };
 		},
+		"tasks/list"() {
+			need();
+			return {
+				tasks: (tasks?.list() ?? []).map((t) => ({
+					task_id: t.id,
+					description: show(t.description),
+					command: show(t.command),
+					status: t.status,
+					started: t.started,
+				})),
+			};
+		},
+		"tasks/stop"({ task_id }) {
+			need();
+			const r = tasks?.stop(task_id) ?? { ok: false, text: "no tasks" };
+			return { stopped: r.ok, text: show(r.text) };
+		},
+		// Ctrl+B: the running commands go on in the background.
+		"tasks/background"() {
+			need();
+			return { moved: tasks?.backgroundAll("user") ?? 0 };
+		},
 	};
 	const known = (s: Session, id: string) => {
 		if (!s.checkpoints().some((c) => c.id === id))
@@ -461,6 +486,20 @@ export function createHost(
 		const backups = openBackups(join(dirname(dirname(file)), "backups"), id);
 		// Not saved: a resumed session starts in the project, as in Claude Code.
 		const shell = { cwd };
+		// Background commands write to the temp folder, as Claude Code's do:
+		// %TEMP%\manas\<project>\<session>\tasks (scrubbed, line by line).
+		tasks = openTasks({
+			dir: join(dirname(projectDir(cwd, join(tmpdir(), "manas"))), id, "tasks"),
+			vault: v,
+			notify: (text) => session?.notify(text),
+			finished: (f) =>
+				event("task/finished", {
+					task_id: f.id,
+					status: f.status,
+					summary: show(f.summary),
+					output_file: f.outputFile,
+				}),
+		});
 		const s = createSession({
 			registry,
 			vault: v,
@@ -471,6 +510,7 @@ export function createHost(
 			toolCtx: {
 				cwd,
 				shell,
+				tasks,
 				denied: (path) => deniedPath(path, settings.current.rules, cwd),
 				reads: readRecord(loaded?.reads, (r) => store.read(r)),
 				vault: v,
@@ -748,6 +788,7 @@ export function createHost(
 		close() {
 			unsubscribe();
 			session?.interrupt(true);
+			tasks?.killAll();
 			cancelPending("closed");
 		},
 	};
