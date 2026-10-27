@@ -36,6 +36,34 @@ test("arguments, redirections, dynamic names, .NET calls, errors", async () => {
 	);
 });
 
+test("what Claude Code's checks look at: plain arguments, $(), strings, splats, types, scoped assignments", async () => {
+	const plain = async (cmd: string) =>
+		(await parsePowerShell(cmd)).commands.map((c) => c.plain);
+	expect(await plain("Select-Object -First 5")).toEqual([true]);
+	expect(await plain("Remove-Item a,b -Confirm:$false")).toEqual([true]);
+	expect(
+		await plain("Get-ChildItem | Where-Object { $_.Length -gt 1 }"),
+	).toEqual([true, true]);
+	expect(await plain("Get-Content $p")).toEqual([false]);
+	expect(await plain("Get-Content (Get-Item x)")).toEqual([false, true]);
+	expect((await parsePowerShell("gci | ? { $_ }")).commands[1].kinds).toEqual([
+		"ScriptBlock",
+	]);
+	const r = async (cmd: string) => await parsePowerShell(cmd);
+	expect((await r('"$(Get-Date)"')).subexpressions).toBe(true);
+	expect((await r('Write-Output "a $x"')).expandable).toBe(true);
+	expect((await r('Write-Output "plain"')).expandable).toBe(false);
+	expect((await r("Get-Item @a")).splatting).toBe(true);
+	expect((await r("git log --% --x")).stopParsing).toBe(true);
+	expect((await r("[Environment]::UserName")).types).toEqual(["Environment"]);
+	const drive = "$" + "{C:\\x.txt}"; // PowerShell's ${drive:path} variable
+	expect(
+		(await r(`${drive} = 1; $env:X = 1; $x = 1`)).scopedAssignments,
+	).toEqual([drive, "$env:X"]);
+	expect((await r("using namespace System")).usings).toBe(true);
+	expect((await r("#Requires -Version 5\nGet-Date")).requires).toBe(true);
+});
+
 test("non-ASCII and multi-line commands survive", async () => {
 	const r = await parsePowerShell(
 		"Get-Item 'C:\\Users\\মানস\\ファイル.txt'\nGet-Date",

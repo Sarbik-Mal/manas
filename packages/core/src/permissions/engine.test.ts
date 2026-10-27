@@ -144,6 +144,104 @@ test("suggestions: one prefix per part that asked, at most 5", async () => {
 	).toHaveLength(5);
 });
 
+test("every part of a chain, pipeline and $(...) is checked (the 3.2 check)", async () => {
+	expect(await behavior("Get-Item x; Remove-Item y")).toBe("ask");
+	expect(await behavior("Get-Item x | Remove-Item")).toBe("ask");
+	expect(await behavior("Get-Item x; Get-ChildItem")).toBe("allow");
+});
+
+test("Claude Code's checks ask, with no rule to save, whatever specific rules allow", async () => {
+	const anyRule = rules({ allow: ["PowerShell(* *)", "PowerShell(*)"] });
+	for (const c of [
+		"Get-Item (",
+		"iex 'Get-Date'",
+		"& $tool",
+		"pwsh -enc AAAA",
+		"powershell -Command Get-Date",
+		"Start-BitsTransfer x",
+		"certutil -urlcache -f http://x a",
+		"Add-Type -TypeDefinition x",
+		"New-Object -ComObject WScript.Shell",
+		"New-Object System.Net.WebClient",
+		"Invoke-Command -FilePath a.ps1",
+		"Start-Job a.ps1",
+		"ii a.exe",
+		"schtasks /create /tn x",
+		"Register-ScheduledTask x",
+		"ForEach-Object Delete",
+		"Start-Process x -Verb RunAs",
+		"Start-Process pwsh",
+		"Get-ChildItem | ForEach-Object { $_.Name }",
+		"Get-ChildItem | Where-Object { $_.Length -gt 1 }",
+		"Invoke-Command { Get-Date }",
+		'Write-Output "$(Get-Date)"',
+		'Write-Output "a $x"',
+		"Get-Item @a",
+		"git log --% x",
+		"$x.Trim()",
+		"[Environment]::UserName",
+		"$env:X = 1",
+		"$" + "{C:\\x.txt} = 'x'", // PowerShell's ${drive:path} variable
+		"$global:y = 1",
+		"Import-Module x",
+		"Set-Alias ls Remove-Item",
+		"Invoke-CimMethod x",
+		"wmic process call create x",
+		"Get-ChildItem env:",
+		"Remove-Item env:X",
+		"Get-Item HKLM:\\Software",
+		"Get-ChildItem \\\\server\\share",
+		"using namespace System",
+		"cd sub; git status",
+		"Get-Item x > out.txt",
+		"cmdkey /list",
+		"Get-Content .env",
+		"Get-Content keys\\id_rsa",
+	]) {
+		const d = await run(c, anyRule);
+		expect([c, d.behavior, "suggestions" in d && d.suggestions]).toEqual([
+			c,
+			"ask",
+			[],
+		]);
+	}
+	// Only a bare PowerShell rule lets them through; deny still wins.
+	expect(await behavior("iex 'x'", rules({ allow: ["PowerShell"] }))).toBe(
+		"allow",
+	);
+	expect(
+		await behavior(
+			"iex 'x'",
+			rules({ allow: ["PowerShell"], deny: ["PowerShell(iex *)"] }),
+		),
+	).toBe("deny");
+	// Filters and formatters may take script blocks.
+	expect(await behavior("$a | Where-Object { $_.x } | Sort-Object")).toBe(
+		"allow",
+	);
+	expect(await behavior("git status")).toBe("allow");
+	expect(await behavior("cd sub")).toBe("allow");
+	expect(await behavior("$x = 'a'; $x")).toBe("allow");
+	expect(await behavior("Select-Object -First 5")).toBe("allow");
+});
+
+test("variables and expressions in arguments: no read-only, no allow rule", async () => {
+	expect(await behavior("$p = '.env'; Get-Content $p")).toBe("ask");
+	expect(await behavior("Get-Content (Get-Item x)")).toBe("ask");
+	const gc = rules({ allow: ["PowerShell(Get-Content *)"] });
+	expect(await behavior("Get-Content a.txt", gc)).toBe("allow");
+	expect(await run("Get-Content $p", gc)).toMatchObject({
+		behavior: "ask",
+		suggestions: [],
+	});
+	expect(await run("npm test $p")).toMatchObject({
+		behavior: "ask",
+		reason:
+			"an argument is a variable or an expression, which can't be checked ahead",
+		suggestions: [],
+	});
+});
+
 test("paths: gitignore-style with Claude's anchors, case-insensitive", async () => {
 	const read = fileTool("read", true);
 	const edit = fileTool("edit", false);
@@ -318,6 +416,9 @@ test("lowkey: Claude Code's four file cmdlets on plain project paths run; anythi
 		expect([c, await at(c)]).toEqual([c, "ask"]);
 	}
 	expect(await at("Remove-Item a.txt", "manual")).toBe("ask");
+	// After a cd, the paths can't be checked against the starting folder.
+	expect(await at("cd ..; Remove-Item a.txt")).toBe("ask");
+	expect(await at("Set-Location sub; Remove-Item a.txt")).toBe("ask");
 });
 
 test("a command over 10,000 characters asks whatever the rules allow", async () => {

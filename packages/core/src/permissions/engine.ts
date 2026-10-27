@@ -9,6 +9,7 @@ import {
 	resolve,
 } from "node:path";
 import { parseRule, type Rule, type Rules, toolKey } from "../config/settings";
+import { changesLocation, flagged, SECRET, unquote } from "./checks";
 import { type ParseResult, parsePowerShell } from "./powershell";
 
 // The permission engine (tools.md, settings.md): rules first, deny, then ask,
@@ -169,28 +170,32 @@ export async function decide(
 	if (bare) return { behavior: "allow", reason: `allowed by ${bare.text}` };
 
 	if (parsed) {
-		const unclear = unclearReason(parsed);
-		if (unclear) {
-			return { behavior: "ask", reason: unclear, suggestions: [] };
-		}
-		const lowkey = ctx.mode === "acceptEdits";
+		// Asks whatever specific allow rules say; approved once only.
+		const flag = flagged(parsed);
+		if (flag) return { behavior: "ask", reason: flag, suggestions: [] };
+		// After a cd, relative paths can't be checked against the folder the
+		// command started in (Claude Code asks there too).
+		const lowkey = ctx.mode === "acceptEdits" && !changesLocation(parsed);
+		// An allow rule covers a part only with plain arguments: `$p` or
+		// `(...)` could be anything.
 		const open = parsed.commands.filter(
 			(p) =>
 				!readOnly(p) &&
-				!allows.some((rule) => hits(rule, p)) &&
+				!(p.plain && allows.some((rule) => hits(rule, p))) &&
 				!(lowkey && fileCmdlet(p, here, ctx.cwd)),
 		);
 		if (open.length === 0)
 			return { behavior: "allow", reason: "read-only or allowed" };
+		// A rule couldn't cover a part with variables, so none is offered.
+		const rules = [
+			...new Set(open.filter((p) => p.plain).map(suggestCommand)),
+		].slice(0, 5);
 		return {
 			behavior: "ask",
-			reason: "this command can change things",
-			suggestions: [
-				{
-					rules: [...new Set(open.map(suggestCommand))].slice(0, 5),
-					destination: "project",
-				},
-			],
+			reason: open.every((p) => p.plain)
+				? "this command can change things"
+				: "an argument is a variable or an expression, which can't be checked ahead",
+			suggestions: rules.length > 0 ? [{ rules, destination: "project" }] : [],
 		};
 	}
 	if (allows.some((rule) => hits(rule)))
@@ -277,18 +282,17 @@ async function parse(command: string): Promise<ParseResult> {
 			commands: [],
 			redirections: [],
 			invocations: [],
+			subexpressions: false,
+			expandable: false,
+			splatting: false,
+			stopParsing: false,
+			types: [],
+			scopedAssignments: [],
+			usings: false,
+			requires: false,
+			background: false,
 		};
 	}
-}
-
-// Anything the parser can't vouch for asks, whatever the allowlist says.
-function unclearReason(p: ParseResult) {
-	if (p.errors.length > 0) return "the command didn't parse";
-	if (p.commands.some((c) => c.name === null))
-		return "the command runs something chosen at run time";
-	if (p.invocations.length > 0) return "the command calls .NET methods";
-	if (p.redirections.length > 0) return "the command writes to a file";
-	return undefined;
 }
 
 // --- Commands ---
@@ -330,10 +334,11 @@ const GIT_READ = new Set([
 	"ls-files",
 	"rev-parse",
 ]);
-const SECRET = [/^\.env(\..*)?$/i, /\.pem$/i, /\.key$/i, /^id_rsa/i];
-
-// tools.md's read-only allowlist, minus everything never auto-allowed.
+// tools.md's read-only allowlist, minus everything never auto-allowed (the
+// rest of that list is in checks.ts). Plain arguments only: `Get-Content $p`
+// could read anything.
 export function readOnly(part: Part): boolean {
+	if (!part.plain) return false;
 	const name = (part.resolved ?? part.name ?? "")
 		.toLowerCase()
 		.replace(/\.exe$/, "");
@@ -341,8 +346,6 @@ export function readOnly(part: Part): boolean {
 	if (NEVER.has(name) || NEVER.has((part.name ?? "").toLowerCase()))
 		return false;
 	for (const a of args) {
-		if (/(^|\$)env:/i.test(a)) return false; // env vars often hold keys
-		if (a.startsWith("\\\\")) return false; // UNC paths, as in Claude Code
 		const base = a.split(/[\\/]/).pop() ?? "";
 		if (SECRET.some((s) => s.test(base))) return false;
 	}
@@ -402,8 +405,6 @@ const FILE_CMDLETS: Record<
 	},
 	"clear-content": { switches: SHARED, values: FILTERS, value: false },
 };
-
-const unquote = (a: string) => a.replace(/^(['"])(.*)\1$/s, "$2");
 
 // Does lowkey let this part through: one of the four cmdlets, known
 // parameters only, every path a plain one inside the project?

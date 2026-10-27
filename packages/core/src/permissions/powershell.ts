@@ -14,9 +14,21 @@ export type ParseResult = {
 		module: string | null;
 		type: string;
 		args: string[];
+		kinds: string[]; // each arg's AST type, e.g. StringConstant
+		plain: boolean; // every arg literal: no variables or expressions
 	}[];
 	redirections: string[]; // file targets
 	invocations: string[]; // .NET method calls → ask
+	// For Claude Code's PowerShell checks (engine.ts `flagged`).
+	subexpressions: boolean; // $(...)
+	expandable: boolean; // "...$x..."
+	splatting: boolean; // @args
+	stopParsing: boolean; // --%
+	types: string[]; // [Type] literals, constraints, attributes
+	scopedAssignments: string[]; // ${C:\x} =, $env:X =, $global:x =
+	usings: boolean; // using namespace/module/assembly
+	requires: boolean; // #Requires
+	background: boolean; // trailing & (PowerShell 7)
 };
 
 const TIMEOUT_MS = 5000;
