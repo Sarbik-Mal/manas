@@ -54,6 +54,7 @@ export async function* runTurn(
 		permit,
 		ctx = {
 			cwd: process.cwd(),
+			shell: { cwd: process.cwd() },
 			denied: () => undefined,
 			reads: readRecord(),
 			vault: new Vault(),

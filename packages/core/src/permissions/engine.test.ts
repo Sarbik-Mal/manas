@@ -264,11 +264,69 @@ test("lowkey: edits in the project run; outside, protected names and junctions o
 	expect(
 		await at("src/a.ts", "acceptEdits", rules({ ask: ["Edit(src/**)"] })),
 	).toBe("ask");
-	// Commands aren't edits (shell file commands wait for 3.1).
+	// A relative path resolves from the shell's folder, not the project's.
 	expect(
-		(await decide(powershell, { command: "Remove-Item x" }, ctx("acceptEdits")))
-			.behavior,
-	).toBe("ask");
+		(
+			await decide(
+				edit,
+				{ path: "..\\a.ts" },
+				{ ...ctx("acceptEdits"), here: join(project, "src") },
+			)
+		).behavior,
+	).toBe("allow");
+});
+
+test("lowkey: Claude Code's four file cmdlets on plain project paths run; anything else asks", async () => {
+	const project = mkdtempSync(join(tmpdir(), "manas-test-"));
+	const at = (command: string, mode: Mode = "acceptEdits") =>
+		decide(
+			powershell,
+			{ command },
+			{ rules: rules(), session: [], cwd: project, home, mode },
+		).then((d) => d.behavior);
+	for (const c of [
+		"Remove-Item a.txt",
+		"rm a.txt",
+		"del -Recurse -Force build",
+		'Remove-Item -LiteralPath ".\\x.txt" -Force -Confirm:$false',
+		"Set-Content -Path a.txt -Value x",
+		"Set-Content a.txt hi",
+		"Add-Content 'b c.txt' -Value x -Encoding utf8",
+		"Clear-Content src\\a.txt",
+		"Remove-Item a.txt,b.txt",
+		`Remove-Item ${join(project, "x.txt")}`,
+		"Get-ChildItem; Remove-Item a.txt",
+	]) {
+		expect([c, await at(c)]).toEqual([c, "allow"]);
+	}
+	for (const c of [
+		"Remove-Item ..\\x",
+		"Remove-Item .git\\x",
+		"Remove-Item .",
+		"Remove-Item *.txt",
+		"Remove-Item $p",
+		"Remove-Item ~\\x",
+		"Remove-Item env:FOO",
+		"Remove-Item a.txt -Bogus",
+		"Remove-Item a.txt -Force:$x",
+		`Set-Content a.txt "it's"`,
+		"Set-Content a.txt x y",
+		"Remove-Item a.txt; npm test",
+		"New-Item a.txt",
+		"Set-Content a.txt x > b.txt",
+	]) {
+		expect([c, await at(c)]).toEqual([c, "ask"]);
+	}
+	expect(await at("Remove-Item a.txt", "manual")).toBe("ask");
+});
+
+test("a command over 10,000 characters asks whatever the rules allow", async () => {
+	const long = `Get-Date # ${"x".repeat(10_000)}`;
+	expect(await behavior(long, rules({ allow: ["PowerShell"] }))).toBe("ask");
+	expect(await behavior("Get-Date", rules({ allow: ["PowerShell"] }))).toBe(
+		"allow",
+	);
+	expect(await behavior(long, rules({ deny: ["PowerShell"] }))).toBe("deny");
 });
 
 test("parseMode: plain and display names, any case; later modes refused", () => {

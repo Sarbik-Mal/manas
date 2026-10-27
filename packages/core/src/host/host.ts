@@ -459,6 +459,8 @@ export function createHost(
 		);
 		// The project's backups/ sits beside its sessions/ (memory-management.md).
 		const backups = openBackups(join(dirname(dirname(file)), "backups"), id);
+		// Not saved: a resumed session starts in the project, as in Claude Code.
+		const shell = { cwd };
 		const s = createSession({
 			registry,
 			vault: v,
@@ -468,6 +470,7 @@ export function createHost(
 			backups,
 			toolCtx: {
 				cwd,
+				shell,
 				denied: (path) => deniedPath(path, settings.current.rules, cwd),
 				reads: readRecord(loaded?.reads, (r) => store.read(r)),
 				vault: v,
@@ -479,6 +482,7 @@ export function createHost(
 					rules: settings.current.rules,
 					session: sessionRules,
 					cwd,
+					here: shell.cwd,
 					mode,
 				});
 				if (d.behavior === "allow") return undefined;

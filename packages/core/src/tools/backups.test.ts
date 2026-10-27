@@ -19,6 +19,7 @@ function project(files: Record<string, string> = {}) {
 	const ctx: ToolCtx = {
 		signal: new AbortController().signal,
 		cwd,
+		shell: { cwd },
 		denied: () => undefined,
 		reads: readRecord(),
 		vault: new Vault(),

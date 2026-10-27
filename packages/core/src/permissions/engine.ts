@@ -38,7 +38,8 @@ export type Decision =
 export type Context = {
 	rules: Rules;
 	session: Rule[]; // "don't ask again this session"
-	cwd: string;
+	cwd: string; // the project: anchors rules, bounds lowkey
+	here?: string; // where relative paths resolve (the shell's folder), or cwd
 	home?: string;
 	mode?: Mode;
 };
@@ -107,16 +108,16 @@ export async function decide(
 	ctx: Context,
 ): Promise<Decision> {
 	const home = ctx.home ?? homedir();
+	const here = ctx.here ?? ctx.cwd;
 	const command = tool.permission?.command?.(input);
 	const parsed = command === undefined ? undefined : await parse(command);
 	const target = tool.permission?.path?.(input);
-	const path =
-		target === undefined ? undefined : posix(resolve(ctx.cwd, target));
+	const path = target === undefined ? undefined : posix(resolve(here, target));
 	// An edit lowkey may run: in the project (after links), not protected.
 	const editable =
 		target !== undefined &&
 		covers("edit", tool.name) &&
-		inProject(resolve(ctx.cwd, target), ctx.cwd);
+		inProject(resolve(here, target), ctx.cwd);
 
 	// Does `rule` cover this call? For a command: any part (deny, ask) or one
 	// given part (allow).
@@ -150,9 +151,14 @@ export async function decide(
 			};
 		}
 	}
-	// ponytail: lowkey covers edit and write only; Claude Code also lets
-	// mkdir/mv/cp/rm and Set-Content in the project through. Add with 3.1,
-	// when PowerShell can change things.
+	// Too long to review at a glance: asks whatever the rules say, as in
+	// Claude Code.
+	if (command !== undefined && command.length > MAX_COMMAND)
+		return {
+			behavior: "ask",
+			reason: "the command is longer than 10,000 characters",
+			suggestions: [],
+		};
 	if (ctx.mode === "acceptEdits" && editable)
 		return { behavior: "allow", reason: "lowkey: an edit in the project" };
 	const allows = [...ctx.rules.allow, ...ctx.session];
@@ -167,8 +173,12 @@ export async function decide(
 		if (unclear) {
 			return { behavior: "ask", reason: unclear, suggestions: [] };
 		}
+		const lowkey = ctx.mode === "acceptEdits";
 		const open = parsed.commands.filter(
-			(p) => !readOnly(p) && !allows.some((rule) => hits(rule, p)),
+			(p) =>
+				!readOnly(p) &&
+				!allows.some((rule) => hits(rule, p)) &&
+				!(lowkey && fileCmdlet(p, here, ctx.cwd)),
 		);
 		if (open.length === 0)
 			return { behavior: "allow", reason: "read-only or allowed" };
@@ -204,6 +214,12 @@ export async function decide(
 					},
 		],
 	};
+}
+
+// `abs` is `cwd` or inside it, once links are followed.
+export function within(abs: string, cwd: string) {
+	const rel = relative(real(cwd), real(abs));
+	return !rel.startsWith("..") && !isAbsolute(rel);
 }
 
 // Inside `cwd` once links are followed (a junction out doesn't count), and
@@ -250,17 +266,6 @@ export function deniedPath(
 			pathMatches(r.specifier, target, rule.base, cwd, home)
 		);
 	})?.text;
-}
-
-// Why `command` isn't read-only, or undefined if every part is.
-export async function notReadOnly(command: string) {
-	const parsed = await parse(command);
-	const unclear = unclearReason(parsed);
-	if (unclear) return unclear;
-	const open = parsed.commands.filter((p) => !readOnly(p));
-	if (open.length === 0) return undefined;
-	const names = open.map((p) => p.resolved ?? p.name);
-	return `${[...new Set(names)].join(", ")} can change things or read secrets`;
 }
 
 async function parse(command: string): Promise<ParseResult> {
@@ -369,6 +374,91 @@ export function readOnly(part: Part): boolean {
 	if (name === "pip" || name === "pip3")
 		return ["list", "show", "freeze"].includes(sub);
 	return false;
+}
+
+const MAX_COMMAND = 10_000;
+
+// Claude Code's lowkey cmdlets, with the parameters each may use (any other
+// asks). Paths come from -Path and the like, or the first positional;
+// set/add-content take the value as the second positional.
+const PATH_PARAMS = ["-path", "-literalpath", "-pspath", "-lp"];
+const SHARED = ["-force", "-whatif", "-confirm", "-usetransaction"];
+const FILTERS = ["-filter", "-include", "-exclude", "-credential", "-stream"];
+const CONTENT = {
+	switches: [...SHARED, "-passthru", "-nonewline", "-asbytestream"],
+	values: [...FILTERS, "-value", "-encoding"],
+	value: true,
+};
+const FILE_CMDLETS: Record<
+	string,
+	{ switches: string[]; values: string[]; value: boolean }
+> = {
+	"set-content": CONTENT,
+	"add-content": CONTENT,
+	"remove-item": {
+		switches: [...SHARED, "-recurse"],
+		values: FILTERS,
+		value: false,
+	},
+	"clear-content": { switches: SHARED, values: FILTERS, value: false },
+};
+
+const unquote = (a: string) => a.replace(/^(['"])(.*)\1$/s, "$2");
+
+// Does lowkey let this part through: one of the four cmdlets, known
+// parameters only, every path a plain one inside the project?
+function fileCmdlet(part: Part, here: string, cwd: string) {
+	const spec = FILE_CMDLETS[(part.resolved ?? "").toLowerCase()];
+	if (!spec || !part.module?.startsWith("Microsoft.")) return false;
+	const paths: string[] = [];
+	const positional: string[] = [];
+	let namedPath = false;
+	let namedValue = false;
+	// `a.txt,b.txt` is two paths; a quoted one is one.
+	const addPaths = (a: string) =>
+		paths.push(...(/^['"]/.test(a) ? [a] : a.split(",")));
+	for (let i = 0; i < part.args.length; i++) {
+		const m = /^-(\w+)(?::(.+))?$/s.exec(part.args[i]);
+		if (!m) {
+			positional.push(part.args[i]);
+			continue;
+		}
+		const flag = `-${m[1].toLowerCase()}`;
+		// A switch alone, or as -Confirm:$false.
+		if (
+			spec.switches.includes(flag) &&
+			(m[2] === undefined || /^\$(true|false)$/i.test(m[2]))
+		)
+			continue;
+		const value = m[2] ?? part.args[++i];
+		if (value === undefined) return false;
+		if (PATH_PARAMS.includes(flag)) {
+			namedPath = true;
+			addPaths(value);
+		} else if (spec.values.includes(flag)) {
+			if (flag === "-value") namedValue = true;
+		} else return false;
+	}
+	if (!namedPath && positional.length > 0) addPaths(positional.shift() ?? "");
+	const valueSlots = spec.value && !namedValue ? 1 : 0;
+	if (positional.length > valueSlots) return false;
+	// A quote inside a positional value asks (Claude Code: use -Value).
+	if (positional.some((v) => /['"]/.test(unquote(v)))) return false;
+	return (
+		paths.length > 0 &&
+		paths.every((p) => {
+			const bare = unquote(p);
+			// Wildcards, variables, escapes, quotes, `~` and provider paths
+			// (env:, HKCU:) can't be checked as written.
+			if (!bare || /[*?[\]$`'"]/.test(bare) || bare.startsWith("~"))
+				return false;
+			if (bare.lastIndexOf(":") > (/^[a-z]:/i.test(bare) ? 1 : -1))
+				return false;
+			const name = basename(bare);
+			if (name === "." || name === "..") return false;
+			return inProject(resolve(here, bare), cwd);
+		})
+	);
 }
 
 // One rule per part: the command, plus a subcommand-like first word for

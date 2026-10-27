@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Vault } from "../safety/scrub";
 import { tempRoot } from "../testing/fake-openai";
@@ -11,6 +11,7 @@ import { buildRegistry, callTool } from "./registry";
 const ctxFor = (cwd: string, signal = new AbortController().signal) => ({
 	signal,
 	cwd,
+	shell: { cwd },
 	denied: () => undefined,
 	reads: readRecord(),
 	vault: new Vault(),
@@ -42,41 +43,64 @@ test("errors come back as text, with the exit code", async () => {
 	expect(out).toContain("exit code 1");
 });
 
-test("anything not read-only is refused before any permission prompt", async () => {
-	const registry = buildRegistry([powershell] as never);
+test("a command that changes things goes to the permission check, then runs", async () => {
+	const cwd = tempRoot();
 	let asked = 0;
-	const permit = async () => {
-		asked++;
-		return undefined;
-	};
-	for (const command of [
-		"Remove-Item a.txt",
-		"Get-Content .env",
-		"iex 'Get-Date'",
-		"Get-Date > out.txt",
-	]) {
-		const r = await callTool(
-			registry,
-			"powershell",
-			JSON.stringify(input(command)),
-			ctxFor(tempRoot()),
-			permit,
-		);
-		expect(r.status).toBe("error");
-		expect(r.output).toStartWith(
-			"error: only read-only commands can run for now:",
-		);
-	}
-	expect(asked).toBe(0);
-	const ok = await callTool(
-		registry,
+	const r = await callTool(
+		buildRegistry([powershell] as never),
 		"powershell",
-		JSON.stringify(input("Get-Date -Year 2001 -Format yyyy")),
-		ctxFor(tempRoot()),
-		permit,
+		JSON.stringify(input("New-Item made.txt | Out-Null; 'done'")),
+		ctxFor(cwd),
+		async () => {
+			asked++;
+			return undefined;
+		},
 	);
-	expect(ok).toEqual({ status: "ok", output: "2001" });
+	expect(r).toEqual({ status: "ok", output: "done" });
 	expect(asked).toBe(1);
+	expect(existsSync(join(cwd, "made.txt"))).toBe(true);
+});
+
+test("a cd carries over inside the project and resets outside it", async () => {
+	const cwd = tempRoot();
+	mkdirSync(join(cwd, "sub"));
+	const ctx = ctxFor(cwd);
+	expect(await powershell.run(input("cd sub"), ctx)).toBe("(no output)");
+	expect(ctx.shell.cwd).toBe(join(cwd, "sub"));
+	expect(await powershell.run(input("(Get-Location).Path"), ctx)).toBe(
+		join(cwd, "sub"),
+	);
+	expect(await powershell.run(input("cd C:\\"), ctx)).toBe(
+		`Shell cwd was reset to ${cwd}`,
+	);
+	expect(ctx.shell.cwd).toBe(cwd);
+});
+
+test("exit codes read as Claude Code reads them", async () => {
+	const ctx = ctxFor(tempRoot());
+	writeFileSync(join(ctx.cwd, "a.txt"), "hello\n");
+	expect(await powershell.run(input("findstr nope a.txt"), ctx)).toBe(
+		"No matches found",
+	);
+	expect(await powershell.run(input("cmd /c exit 3"), ctx)).toBe(
+		"Command failed with exit code 3",
+	);
+	expect(
+		await powershell.run(
+			input("findstr nope a.txt | Select-Object -First 1"),
+			ctx,
+		),
+	).toBe("No matches found");
+});
+
+test("a long command runs, and > writes UTF-8", async () => {
+	const ctx = ctxFor(tempRoot());
+	const long = `$x = '${"a".repeat(20_000)}'; $x.Length`;
+	expect(await powershell.run(input(long), ctx)).toBe("20000");
+	await powershell.run(input("'héllo' > out.txt"), ctx);
+	expect(readFileSync(join(ctx.cwd, "out.txt"), "utf8")).toContain("héllo");
+	// param() must lead the script, so it runs without the prefix.
+	expect(await powershell.run(input("param($n = 2) $n * 3"), ctx)).toBe("6");
 });
 
 test("a timeout or an interrupt stops the command", async () => {

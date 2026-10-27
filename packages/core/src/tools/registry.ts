@@ -10,8 +10,11 @@ import type { ReadRecord } from "./reads";
 // backups, scratch, emit (architecture.md 0b, rule 2).
 export type ToolCtx = {
 	signal: AbortSignal;
-	// The project folder; relative paths resolve against it.
+	// The project folder.
 	cwd: string;
+	// Where commands start and relative paths resolve: a `cd` in PowerShell
+	// moves it within the project (3.1). One box for the whole session.
+	shell: { cwd: string };
 	// The deny rule covering an absolute path for reading, if any. Search
 	// results drop such files (as Claude Code does for Grep and Glob).
 	denied: (path: string) => string | undefined;

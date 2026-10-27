@@ -383,6 +383,7 @@ function rewindable() {
 		backups,
 		toolCtx: {
 			cwd,
+			shell: { cwd },
 			denied: () => undefined,
 			reads,
 			vault: new Vault(),

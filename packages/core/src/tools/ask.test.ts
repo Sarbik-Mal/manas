@@ -44,6 +44,7 @@ test("Claude Code's result text: picked labels, typed text, unanswered", () => {
 const ctx = (ask?: ToolCtx["ask"]): ToolCtx => ({
 	signal: new AbortController().signal,
 	cwd: ".",
+	shell: { cwd: "." },
 	denied: () => undefined,
 	reads: readRecord(),
 	vault: new Vault(),

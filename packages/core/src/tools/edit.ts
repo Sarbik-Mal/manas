@@ -124,7 +124,7 @@ export async function openForChange(
 	| { path: string; missing: true }
 	| ({ path: string; missing: false; hash: string; stale: boolean } & Text)
 > {
-	const path = resolve(ctx.cwd, file_path);
+	const path = resolve(ctx.shell.cwd, file_path);
 	if (ctx.denied(path))
 		return `File is covered by a Read deny rule in your permission settings and cannot be ${verb}.`;
 	const info = statOf(path);

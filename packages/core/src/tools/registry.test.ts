@@ -50,6 +50,7 @@ const signal = new AbortController().signal;
 const ctx = {
 	signal,
 	cwd: process.cwd(),
+	shell: { cwd: process.cwd() },
 	denied: () => undefined,
 	reads: readRecord(),
 	vault: new Vault(),

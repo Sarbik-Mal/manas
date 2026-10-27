@@ -13,10 +13,12 @@ const strict = { additionalProperties: false } as const;
 const nullable = <T extends TSchema>(t: T, description: string) =>
 	Type.Union([t, Type.Null()], { description });
 
-// Relative paths resolve against the project; results inside it show relative.
-const full = (ctx: ToolCtx, p: string | null) => resolve(ctx.cwd, p ?? ".");
+// Relative paths resolve against the shell's folder (the project unless a
+// `cd` moved it); results inside it show relative.
+const full = (ctx: ToolCtx, p: string | null) =>
+	resolve(ctx.shell.cwd, p ?? ".");
 const shown = (ctx: ToolCtx, p: string) => {
-	const rel = relative(ctx.cwd, p);
+	const rel = relative(ctx.shell.cwd, p);
 	return rel.startsWith("..") || isAbsolute(rel) ? p : rel;
 };
 
@@ -51,7 +53,7 @@ export const read = defineTool({
 	description:
 		"Reads a text file. Returns lines with numbers (number, tab, line), starting at 1. " +
 		`Reads up to ${MAX_LINES} lines by default; use offset and limit for other parts, especially of large files. ` +
-		"A path may be absolute or relative to the project folder. Reads files only: list a folder with glob.",
+		"A path may be absolute or relative to the current folder. Reads files only: list a folder with glob.",
 	schema: Type.Object(
 		{
 			file_path: Type.String({ description: "The file to read." }),
@@ -166,7 +168,7 @@ export const glob = defineTool({
 			pattern: Type.String({ description: "The glob pattern." }),
 			path: nullable(
 				Type.String(),
-				"The folder to search in, or null for the project folder.",
+				"The folder to search in, or null for the current folder.",
 			),
 		},
 		strict,
@@ -239,7 +241,7 @@ export const grep = defineTool({
 			pattern: Type.String({ description: "The regular expression to find." }),
 			path: nullable(
 				Type.String(),
-				"File or folder to search, or null for the project folder.",
+				"File or folder to search, or null for the current folder.",
 			),
 			glob: nullable(
 				Type.String(),
@@ -309,7 +311,7 @@ export const grep = defineTool({
 		args.push("--regexp", i.pattern, "--", target);
 
 		const p = Bun.spawn([await rgPath(), ...args], {
-			cwd: ctx.cwd,
+			cwd: ctx.shell.cwd,
 			stdin: "ignore",
 			stdout: "pipe",
 			stderr: "pipe",
@@ -325,7 +327,7 @@ export const grep = defineTool({
 
 		// `.\src\a.ts` → `src\a.ts`; files the user denied reading are dropped.
 		const clean = (f: string) => f.replace(/^\.[\\/]/, "");
-		const allowed = (f: string) => !ctx.denied(resolve(ctx.cwd, f));
+		const allowed = (f: string) => !ctx.denied(resolve(ctx.shell.cwd, f));
 		let entries: string[];
 		if (mode === "files_with_matches") {
 			entries = out

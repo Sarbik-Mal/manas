@@ -26,6 +26,7 @@ function project(
 	const ctx: ToolCtx = {
 		signal: new AbortController().signal,
 		cwd,
+		shell: { cwd },
 		denied: (p) => deniedPath(p, rules, cwd),
 		reads: readRecord(),
 		vault: new Vault(),
@@ -60,6 +61,14 @@ const G = (i: Partial<Parameters<typeof grep.run>[0]>) => ({
 });
 const lines = (n: number) =>
 	Array.from({ length: n }, (_, i) => `line ${i + 1}`).join("\n");
+
+test("relative paths and searches start in the shell's folder after a cd", async () => {
+	const { ctx, cwd } = project({ "sub/a.txt": "x in sub\n", "b.txt": "x\n" });
+	ctx.shell.cwd = join(cwd, "sub");
+	expect(await read.run(R({}), ctx)).toBe("     1\tx in sub");
+	expect(await grep.run(G({}), ctx)).toBe("a.txt");
+	expect(await glob.run({ pattern: "*.txt", path: null }, ctx)).toBe("a.txt");
+});
 
 test("read: numbered lines, offset and limit, the 2,000-line default", async () => {
 	const { ctx, cwd } = project({

@@ -16,6 +16,7 @@ function project(files: Record<string, string | Uint8Array>) {
 	const ctx: ToolCtx = {
 		signal: new AbortController().signal,
 		cwd,
+		shell: { cwd },
 		denied: (p) => (p.endsWith("denied.ts") ? "Read(denied.ts)" : undefined),
 		reads: readRecord(),
 		vault: new Vault(),
