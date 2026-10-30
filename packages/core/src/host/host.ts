@@ -16,9 +16,12 @@ import Value from "typebox/value";
 import { version } from "../../package.json";
 import {
 	type LiveSettings,
+	parseRule,
 	projectFile,
 	type Rule,
+	type Rules,
 	saveRule,
+	toolKey,
 } from "../config/settings";
 import { debugLog } from "../log/debug";
 import { firstMessage } from "../loop/prompt";
@@ -53,6 +56,7 @@ import {
 } from "../session/store";
 import type { Answers, Questions } from "../tools/ask";
 import { openBackups } from "../tools/backups";
+import { gitBash } from "../tools/gitbash";
 import { readRecord } from "../tools/reads";
 import { buildRegistry, describeErrors, type Tool } from "../tools/registry";
 import { openTasks, type Tasks } from "../tools/tasks";
@@ -444,15 +448,28 @@ export function createHost(
 		// a script that can't.
 		const canAsk = capabilities.includes("user_ask");
 		const shellMax = settings.current.settings.shellOutputMaxChars;
+		const noPowerShell = powerShellOff(
+			settings.current.rules,
+			tools.some((t) => t.name === "bash"),
+		);
+		// A bad MANAS_GIT_BASH_PATH (3.5): said once per session.
+		const badBash = gitBash().warning;
+		if (badBash) notice("warn", badBash);
+		if (noPowerShell)
+			notice(
+				"warn",
+				"PowerShell is off for this session: a Bash deny rule doesn't cover PowerShell. Add a PowerShell(...) rule to keep it.",
+			);
 		const registry = buildRegistry(
 			tools
 				.filter(
 					(t) =>
 						!deniedBy(t.name, settings.current.rules) &&
-						(t.name !== "ask_user" || canAsk),
+						(t.name !== "ask_user" || canAsk) &&
+						!(t.name === "powershell" && noPowerShell),
 				)
 				.map((t) =>
-					t.name === "powershell" && shellMax
+					(t.name === "powershell" || t.name === "bash") && shellMax
 						? { ...t, maxResultChars: shellMax }
 						: t,
 				),
@@ -522,7 +539,8 @@ export function createHost(
 			registry,
 			vault: v,
 			ready,
-			context: () => firstMessage(cwd, undefined, pad),
+			context: () =>
+				firstMessage(cwd, undefined, pad, registry.tools.has("bash")),
 			verbosity,
 			backups,
 			toolCtx: {
@@ -843,4 +861,24 @@ function titleOf(tool: Tool, input: unknown) {
 	if (command !== undefined) return `run: ${command}`;
 	const path = tool.permission?.path?.(input);
 	return path !== undefined ? `${tool.name}: ${path}` : `use ${tool.name}`;
+}
+
+// Claude Code's rule (3.5): with Git Bash, any Bash deny rule turns
+// PowerShell off for the session, since a Bash rule doesn't restrict it,
+// unless a scoped PowerShell rule exists or MANAS_USE_POWERSHELL_TOOL=1.
+export function powerShellOff(
+	rules: Rules,
+	hasBash: boolean,
+	env: Record<string, string | undefined> = process.env,
+) {
+	if (!hasBash || env.MANAS_USE_POWERSHELL_TOOL === "1") return false;
+	const tool = (r: { text: string }) => parseRule(r.text);
+	const bashDenied = rules.deny.some(
+		(r) => toolKey(tool(r)?.tool ?? "") === "bash",
+	);
+	const scoped = [...rules.allow, ...rules.ask, ...rules.deny].some((r) => {
+		const x = tool(r);
+		return x && toolKey(x.tool) === "powershell" && x.specifier !== undefined;
+	});
+	return bashDenied && !scoped;
 }

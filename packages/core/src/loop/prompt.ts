@@ -17,12 +17,19 @@ export const today = () => new Date().toLocaleDateString("en-CA");
 // The first message of a session (developer role): its environment and a git
 // snapshot, as Claude Code gives. Saved with the session, so a resume reuses it.
 // The scratchpad line is Claude Code's.
-export function firstMessage(cwd: string, date = today(), scratch?: string) {
+export function firstMessage(
+	cwd: string,
+	date = today(),
+	scratch?: string,
+	bash = false,
+) {
 	return [
 		"<environment>",
 		`Today's date: ${date}`,
 		`OS: ${version()} ${release()}`,
-		`Shell: ${EDITION} (the powershell tool)`,
+		bash
+			? `Shell: ${EDITION} (primary); Bash tool also available for POSIX scripts — each takes its own syntax.`
+			: `Shell: ${EDITION} (the powershell tool)`,
 		`Working directory: ${cwd}`,
 		...(scratch
 			? [

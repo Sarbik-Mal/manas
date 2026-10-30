@@ -1,4 +1,5 @@
 import type { ParseResult } from "./powershell";
+import { FIND_ACTIONS } from "./readonly";
 
 // Claude Code's PowerShell security checks (2.1.310), in its order, plus
 // Manas's own never-auto-allowed cases (tools.md §2). A flagged command asks
@@ -302,5 +303,47 @@ export function flagged(p: ParseResult): string | undefined {
 				return `Command names a secret file (${a})`;
 		}
 	}
+	return undefined;
+}
+
+// Claude Code's documented bash cases (3.5): these ask whatever a specific
+// allow rule says, as flagged PowerShell does.
+const SPECIAL_VARS = new Set(
+	"HOME PWD OLDPWD USER LOGNAME SHELL PATH HOSTNAME UID EUID PPID RANDOM SECONDS LINENO TMPDIR BASH_VERSION BASHPID SHLVL HISTFILE IFS".split(
+		" ",
+	),
+);
+// Run code or another command that can't be checked ahead (Claude's exec
+// wrappers, plus eval, source and nested shells).
+const RUNS_OTHER = new Set(
+	"eval source . exec bash sh zsh watch setsid ionice flock".split(" "),
+);
+
+export function flaggedBash(p: ParseResult): string | undefined {
+	const parts = p.commands;
+	if (p.errors.length > 0)
+		return "Could not parse command for security analysis";
+	if (p.tooComplex)
+		return `${p.tooComplex}, which can't be checked before it runs`;
+	const special = p.assigns?.find((v) => SPECIAL_VARS.has(v));
+	if (special) return `Command sets the special shell variable ${special}`;
+	for (const c of parts) {
+		const name = c.name ?? "";
+		if (RUNS_OTHER.has(name))
+			return `${name} runs code that can't be checked before it runs`;
+		if (name === "find" && c.args.some((a) => FIND_ACTIONS.has(a)))
+			return "find with -exec, -delete or a write action requires approval";
+		for (const a of [name, ...c.args]) {
+			if (UNC.test(a))
+				return `Command argument '${a}' contains a UNC path that could trigger network requests`;
+			const base = a.split(/[\\/]/).pop() ?? "";
+			if (SECRET.some((s) => s.test(base)))
+				return `Command names a secret file (${a})`;
+		}
+	}
+	if (parts.length > 1 && changesLocation(p) && parts.some(named("git")))
+		return "Compound commands with cd and git require approval to prevent bare repository attacks";
+	if (p.redirections.some((r) => r !== "/dev/null"))
+		return "Command contains file redirections that could write to arbitrary paths";
 	return undefined;
 }

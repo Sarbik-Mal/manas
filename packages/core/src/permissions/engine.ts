@@ -9,8 +9,16 @@ import {
 	resolve,
 } from "node:path";
 import { parseRule, type Rule, type Rules, toolKey } from "../config/settings";
-import { changesLocation, flagged, SECRET, unquote } from "./checks";
+import { parseBash, toWindows } from "./bash";
+import {
+	changesLocation,
+	flagged,
+	flaggedBash,
+	SECRET,
+	unquote,
+} from "./checks";
 import { type ParseResult, parsePowerShell } from "./powershell";
+import { bashReadOnly } from "./readonly";
 
 // The permission engine (tools.md, settings.md): rules first, deny, then ask,
 // then allow; then the defaults. Matching follows Claude Code's rules, so
@@ -112,7 +120,8 @@ export async function decide(
 	const home = ctx.home ?? homedir();
 	const here = ctx.here ?? ctx.cwd;
 	const command = tool.permission?.command?.(input);
-	const parsed = command === undefined ? undefined : await parse(command);
+	const bash = toolKey(tool.name) === "bash";
+	const parsed = command === undefined ? undefined : await parse(command, bash);
 	const target = tool.permission?.path?.(input);
 	const path = target === undefined ? undefined : posix(resolve(here, target));
 	// An edit lowkey may run: in the project (after links), not protected.
@@ -181,7 +190,7 @@ export async function decide(
 
 	if (parsed) {
 		// Asks whatever specific allow rules say; approved once only.
-		const flag = flagged(parsed);
+		const flag = bash ? flaggedBash(parsed) : flagged(parsed);
 		if (flag) return { behavior: "ask", reason: flag, suggestions: [] };
 		// After a cd, relative paths can't be checked against the folder the
 		// command started in (Claude Code asks there too).
@@ -190,15 +199,22 @@ export async function decide(
 		// `(...)` could be anything.
 		const open = parsed.commands.filter(
 			(p) =>
-				!readOnly(p) &&
+				!(bash ? p.plain && bashReadOnly(p.name ?? "", p.args) : readOnly(p)) &&
 				!(p.plain && allows.some((rule) => hits(rule, p))) &&
-				!(lowkey && fileCmdlet(p, here, ctx.cwd)),
+				!(
+					lowkey &&
+					(bash ? fileCommand(p, here, ctx.cwd) : fileCmdlet(p, here, ctx.cwd))
+				),
 		);
 		if (open.length === 0)
 			return { behavior: "allow", reason: "read-only or allowed" };
 		// A rule couldn't cover a part with variables, so none is offered.
 		const rules = [
-			...new Set(open.filter((p) => p.plain).map(suggestCommand)),
+			...new Set(
+				open
+					.filter((p) => p.plain)
+					.map((p) => suggestCommand(p, bash ? "Bash" : "PowerShell")),
+			),
 		].slice(0, 5);
 		return {
 			behavior: "ask",
@@ -283,9 +299,9 @@ export function deniedPath(
 	})?.text;
 }
 
-async function parse(command: string): Promise<ParseResult> {
+async function parse(command: string, bash: boolean): Promise<ParseResult> {
 	try {
-		return await parsePowerShell(command);
+		return await (bash ? parseBash(command) : parsePowerShell(command));
 	} catch (err) {
 		return {
 			errors: [(err as Error).message],
@@ -335,15 +351,6 @@ const NEVER = new Set(
 		" ",
 	),
 );
-const GIT_READ = new Set([
-	"status",
-	"log",
-	"diff",
-	"show",
-	"blame",
-	"ls-files",
-	"rev-parse",
-]);
 // tools.md's read-only allowlist, minus everything never auto-allowed (the
 // rest of that list is in checks.ts). Plain arguments only: `Get-Content $p`
 // could read anything.
@@ -370,19 +377,9 @@ export function readOnly(part: Part): boolean {
 	}
 	if (args.length === 1 && args[0] === "--version") return true;
 	if (["where", "whoami", "hostname"].includes(name)) return true;
-	const [sub, ...rest] = args;
-	if (name === "git") {
-		if (rest.some((a) => /^--output/i.test(a))) return false;
-		if (GIT_READ.has(sub)) return true;
-		if (sub === "remote") return rest.length === 1 && rest[0] === "-v";
-		if (sub === "stash") return rest.length === 1 && rest[0] === "list";
-		if (sub === "branch")
-			return rest.every((a) =>
-				/^(-a|-r|-v|-vv|--all|--remotes|--list)$/.test(a),
-			);
-		if (sub === "tag") return rest.every((a) => /^(-l|--list)$/.test(a));
-		return false;
-	}
+	const [sub] = args;
+	// Claude Code's git tables, shared with bash (3.5).
+	if (name === "git") return bashReadOnly("git", args);
 	if (name === "npm") return sub === "ls";
 	if (name === "pip" || name === "pip3")
 		return ["list", "show", "freeze"].includes(sub);
@@ -472,9 +469,42 @@ function fileCmdlet(part: Part, here: string, cwd: string) {
 	);
 }
 
+// Claude Code's lowkey commands for bash (`cFo`): every path plain and in the
+// project. sed counts only as `sed -i <script> <files>`.
+const FILE_COMMANDS = new Set([
+	"mkdir",
+	"touch",
+	"rm",
+	"rmdir",
+	"mv",
+	"cp",
+	"sed",
+]);
+function fileCommand(part: Part, here: string, cwd: string) {
+	const name = part.name ?? "";
+	if (!FILE_COMMANDS.has(name) || !part.plain) return false;
+	const paths = part.args.filter((a) => !a.startsWith("-"));
+	if (name === "sed") {
+		const flags = part.args.filter((a) => a.startsWith("-"));
+		if (!flags.every((f) => /^(-i|--in-place)$/.test(f)) || flags.length !== 1)
+			return false;
+		paths.shift();
+	}
+	return (
+		paths.length > 0 &&
+		paths.every((p) => {
+			// Globs, `~`, variables and escapes can't be checked as written.
+			if (!p || /[*?[\]$`~{}]/.test(p)) return false;
+			const name = basename(p);
+			if (name === "." || name === "..") return false;
+			return inProject(resolve(here, toWindows(p)), cwd);
+		})
+	);
+}
+
 // One rule per part: the command, plus a subcommand-like first word for
 // programs (`git push *`), as Claude Code suggests.
-function suggestCommand(part: Part) {
+function suggestCommand(part: Part, tool: string) {
 	const name = part.resolved ?? part.name ?? "";
 	const first = part.args[0];
 	const sub =
@@ -484,7 +514,7 @@ function suggestCommand(part: Part) {
 		/^[a-z][\w-]*$/i.test(first)
 			? ` ${first}`
 			: "";
-	return `PowerShell(${name}${sub} *)`;
+	return `${tool}(${name}${sub} *)`;
 }
 
 // --- Paths ---

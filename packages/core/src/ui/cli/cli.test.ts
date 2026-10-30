@@ -367,7 +367,7 @@ test("/rewind: pick a prompt, see the change, restore code and conversation", as
 	const project = tempRoot();
 	const file = join(project, "a.ts");
 	writeFileSync(file, "let x = 1;\n");
-	const cli = startCli({ cwd: project, tools: coreTools() });
+	const cli = startCli({ cwd: project, tools: coreTools(null) });
 	replies.push(
 		{ items: [call("read", { file_path: "a.ts", offset: null, limit: null })] },
 		{
@@ -406,7 +406,7 @@ test("/rewind: pick a prompt, see the change, restore code and conversation", as
 
 test("modes: Shift+Tab and /mode switch, the prompt shows lowkey, option 2 on an edit turns it on", async () => {
 	const project = tempRoot();
-	const cli = startCli({ cwd: project, tools: coreTools() });
+	const cli = startCli({ cwd: project, tools: coreTools(null) });
 	await cli.shows("· vibe-check ·");
 	await cli.type("\x1b[Z");
 	await cli.shows("lowkey on: edits in this project run without asking");
@@ -452,7 +452,7 @@ test("--mode sets the starting mode; a bad one stops the CLI", async () => {
 // --- 2.8: ask_user ---
 
 test("the 2.8 check: questions show as a menu and wait; numbers, several, typed text", async () => {
-	const cli = startCli({ tools: coreTools() });
+	const cli = startCli({ tools: coreTools(null) });
 	const option = (
 		label: string,
 		description = "",
@@ -528,7 +528,7 @@ test("the 2.8 check: questions show as a menu and wait; numbers, several, typed 
 });
 
 test("Esc on a question declines it, which stops the turn", async () => {
-	const cli = startCli({ tools: coreTools() });
+	const cli = startCli({ tools: coreTools(null) });
 	replies.push({
 		items: [
 			call("ask_user", {
@@ -557,7 +557,7 @@ test("Esc on a question declines it, which stops the turn", async () => {
 });
 
 test("Ctrl+B moves a running command to the background; /tasks lists and stops it (3.3)", async () => {
-	const cli = startCli({ tools: coreTools(), cwd: tempRoot() });
+	const cli = startCli({ tools: coreTools(null), cwd: tempRoot() });
 	replies.push(
 		{
 			items: [

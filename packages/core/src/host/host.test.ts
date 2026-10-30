@@ -20,7 +20,7 @@ import {
 } from "../testing/fake-openai";
 import { coreTools } from "../tools";
 import { defineTool } from "../tools/registry";
-import { createHost } from "./host";
+import { createHost, powerShellOff } from "./host";
 
 const fake = fakeOpenAI();
 afterAll(fake.stop);
@@ -667,7 +667,7 @@ test("the real tools run in the session's folder, and a Read deny filters grep",
 	writeFileSync(join(project, "app.ts"), "const needle = 1;\n");
 	writeFileSync(join(project, "secret.txt"), "needle in a secret\n");
 	const c = connect(undefined, {
-		tools: coreTools(),
+		tools: coreTools(null),
 		settings: fakeSettings({
 			rules: {
 				allow: [],
@@ -815,7 +815,7 @@ test("an edit shows its diff with real values, and writes them to the file", asy
 		join(project, "app.ts"),
 		`const key = "${key}";\nconst n = 1;\n`,
 	);
-	const c = connect(undefined, { tools: coreTools() });
+	const c = connect(undefined, { tools: coreTools(null) });
 	fake.replies.push(
 		{
 			items: [call("read", { file_path: "app.ts", offset: null, limit: null })],
@@ -852,7 +852,7 @@ test("an edit shows its diff with real values, and writes them to the file", asy
 test("checkpoints/list, checkpoints/preview and session/rewind; errors for unknown or busy", async () => {
 	const project = tempRoot();
 	writeFileSync(join(project, "a.ts"), "let x = 1;\n");
-	const c = connect(undefined, { tools: coreTools() });
+	const c = connect(undefined, { tools: coreTools(null) });
 	// preview and rewind answer once the files are read or written.
 	const ask = async (type: string, data: object = {}) => {
 		const from = c.out.length;
@@ -1052,7 +1052,7 @@ test("the starting mode: the request, then settings; a later mode in settings wa
 
 test("lowkey: edits in the project run; .git still asks; option 2 switches to it", async () => {
 	const project = tempRoot();
-	const c = connect(undefined, { tools: coreTools() });
+	const c = connect(undefined, { tools: coreTools(null) });
 	const write = (file_path: string) => ({
 		items: [call("write", { file_path, content: "x\n" })],
 	});
@@ -1145,16 +1145,16 @@ const questionsAsked = (c: ReturnType<typeof connect>) =>
 	c.out.filter((m) => m.kind === "request" && m.type === "user/ask");
 
 test("ask_user is offered only to a front end that declared user_ask", async () => {
-	const a = connect(undefined, { tools: coreTools() });
+	const a = connect(undefined, { tools: coreTools(null) });
 	await a.ready();
 	expect(a.events("session/started")[0].tools).not.toContain("ask_user");
-	const b = connect(undefined, { tools: coreTools() });
+	const b = connect(undefined, { tools: coreTools(null) });
 	await readyToAsk(b);
 	expect(b.events("session/started")[0].tools).toContain("ask_user");
 });
 
 test("user/ask waits for the answer, which reaches the model; null stops the turn", async () => {
-	const c = connect(undefined, { tools: coreTools() });
+	const c = connect(undefined, { tools: coreTools(null) });
 	await readyToAsk(c);
 	fake.replies.push(
 		{ items: [call("ask_user", { questions: colors })] },
@@ -1189,7 +1189,7 @@ test("questions show real values; answers go back as the model wrote them", asyn
 	const project = tempRoot();
 	const key = "sk-abcdefghijklmnopqrstuvwxyz123456";
 	writeFileSync(join(project, "app.ts"), `const key = "${key}";\n`);
-	const c = connect(undefined, { tools: coreTools() });
+	const c = connect(undefined, { tools: coreTools(null) });
 	const placeholder = "[REDACTED:api_key#1]";
 	fake.replies.push(
 		{
@@ -1239,7 +1239,7 @@ test("questions show real values; answers go back as the model wrote them", asyn
 });
 
 test("a bad answer counts as declined; an interrupt withdraws the question", async () => {
-	const c = connect(undefined, { tools: coreTools() });
+	const c = connect(undefined, { tools: coreTools(null) });
 	await readyToAsk(c);
 	fake.replies.push(
 		{ items: [call("ask_user", { questions: colors })] },
@@ -1297,7 +1297,7 @@ test("with cleanup, the sweep runs once a session opens and never takes that ses
 });
 
 test("a background command: listed, stopped by id, and its end starts a turn by itself (3.3)", async () => {
-	const c = connect(undefined, { tools: coreTools() });
+	const c = connect(undefined, { tools: coreTools(null) });
 	await c.ready(tempRoot());
 	fake.replies.push(
 		{
@@ -1398,4 +1398,54 @@ test("3.4: a big result is saved beside the session; scratchpad writes don't ask
 	expect(c.events("tool/finished")[1]).toMatchObject({ status: "ok" });
 	c.host.close();
 	expect(existsSync(pad)).toBe(false);
+});
+
+test("3.5: with bash, a Bash deny turns PowerShell off (Claude Code's rule), unless a PowerShell rule exists", async () => {
+	const shells = [tool("powershell"), tool("bash"), tool("lsp")];
+	const scoped = connect(undefined, {
+		tools: shells,
+		settings: fakeSettings(rules(["Bash(git push *)"])),
+	});
+	await scoped.ready();
+	expect(scoped.events("session/started")[0].tools).toEqual(["bash", "lsp"]);
+	expect(scoped.events("notice")).toContainEqual(
+		expect.objectContaining({
+			level: "warn",
+			text: "PowerShell is off for this session: a Bash deny rule doesn't cover PowerShell. Add a PowerShell(...) rule to keep it.",
+		}),
+	);
+	const kept = connect(undefined, {
+		tools: shells,
+		settings: fakeSettings(
+			rules(["Bash(git push *)", "PowerShell(git push *)"]),
+		),
+	});
+	await kept.ready();
+	expect(kept.events("session/started")[0].tools).toEqual([
+		"powershell",
+		"bash",
+		"lsp",
+	]);
+	// Without Git Bash there's no bash tool, and PowerShell stays.
+	const noBash = connect(undefined, {
+		tools: [tool("powershell"), tool("lsp")],
+		settings: fakeSettings(rules(["Bash(git push *)"])),
+	});
+	await noBash.ready();
+	expect(noBash.events("session/started")[0].tools).toEqual([
+		"powershell",
+		"lsp",
+	]);
+	// A bare Bash deny with PowerShell off leaves no shell, as in Claude Code.
+	const bare = connect(undefined, {
+		tools: shells,
+		settings: fakeSettings(rules(["Bash"])),
+	});
+	await bare.ready();
+	expect(bare.events("session/started")[0].tools).toEqual(["lsp"]);
+	expect(
+		powerShellOff(rules(["Bash"]).rules, true, {
+			MANAS_USE_POWERSHELL_TOOL: "1",
+		}),
+	).toBe(false);
 });

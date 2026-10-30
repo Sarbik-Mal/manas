@@ -3,6 +3,10 @@ declare module "*.exe" {
 	const path: string;
 	export default path;
 }
+declare module "*.wasm" {
+	const path: string;
+	export default path;
+}
 
 // Text files embedded with `with { type: "text" }` give their content.
 declare module "*.ps1" {

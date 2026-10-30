@@ -62,3 +62,9 @@ test("a date note only when the day changed since the model was last told", () =
 	expect(dateNote(history, "2026-10-27")).toBeUndefined();
 	expect(dateNote([], "2026-10-27")).toBeUndefined();
 });
+
+test("3.5: with bash, the Shell line is Claude Code's", () => {
+	expect(firstMessage(tempRoot(), "2026-10-30", undefined, true)).toContain(
+		`Shell: ${EDITION} (primary); Bash tool also available for POSIX scripts — each takes its own syntax.`,
+	);
+});

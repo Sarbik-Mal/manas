@@ -1,13 +1,17 @@
-import { randomUUID } from "node:crypto";
-import { readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import Type from "typebox";
-import { changesLocation } from "../permissions/checks";
-import { within } from "../permissions/engine";
 import { parsePowerShell } from "../permissions/powershell";
 import { defineTool } from "./registry";
-import type { Reason, Tasks } from "./tasks";
+import {
+	DEFAULT_TIMEOUT_MS,
+	MAX_TIMEOUT_MS,
+	type Meaning,
+	meaningOf,
+	oneIs,
+	runShell,
+	SHELL_OUTPUT_MAX,
+	shellSchema,
+} from "./shell";
+
+export { cut } from "./shell";
 
 // The PowerShell tool (tools.md §2). Spawned as Claude Code spawns its own.
 
@@ -16,20 +20,6 @@ const IS_51 = !/pwsh/i.test(SHELL);
 export const EDITION = IS_51
 	? "Windows PowerShell 5.1 (powershell.exe)"
 	: "PowerShell 7 (pwsh)";
-
-const DEFAULT_TIMEOUT_MS = 120_000;
-const MAX_TIMEOUT_MS = 600_000;
-// Inline up to this, else saved to a file (spill.ts); `shellOutputMaxChars`
-// changes it. A failed command gets a 10K head and tail instead, no file.
-export const SHELL_OUTPUT_MAX = 30_000;
-const FAILED_MAX = 10_000;
-// Past 5 GB a command is killed (Claude Code's cap); only the first 64 MiB is
-// kept in memory, all a spill file holds.
-// ponytail: so a failed command past 64 MiB has no real end in its excerpt;
-// keep a rolling tail too if such outputs come up. The kill's text is ours:
-// Claude Code's wasn't found in its exe.
-export const OUTPUT_KILL = 5 * 1024 ** 3;
-const KEEP = 64 * 1024 ** 2;
 
 // The script travels in an environment variable, not on the command line
 // (-EncodedCommand fails past ~12K characters); the launcher clears it so
@@ -80,19 +70,6 @@ export function fromClixml(s: string) {
 		.replace(/&amp;/g, "&");
 }
 
-export function cut(text: string, max = FAILED_MAX) {
-	if (text.length <= max) return text;
-	const half = Math.floor(max / 2);
-	return `${text.slice(0, half)}\n[… ${text.length - 2 * half} characters cut …]\n${text.slice(-half)}`;
-}
-
-// What an exit code means, read from the last command that isn't a
-// formatter (Claude Code's table): some programs exit 1 for "no match".
-type Meaning = { failed: boolean; note?: string };
-const oneIs = (note: string) => (code: number) => ({
-	failed: code !== 0 && code !== 1,
-	note: code === 1 ? note : undefined,
-});
 const MEANINGS: Record<string, (code: number) => Meaning> = {
 	grep: oneIs("No matches found"),
 	rg: oneIs("No matches found"),
@@ -122,59 +99,8 @@ const FORMATTERS = new Set(
 	),
 );
 
-export async function meaning(command: string, code: number): Promise<Meaning> {
-	const plain = { failed: code !== 0 };
-	if (code === 0) return plain;
-	try {
-		const parts = (await parsePowerShell(command)).commands;
-		const last = parts.findLast(
-			(p) => !FORMATTERS.has((p.resolved ?? p.name ?? "").toLowerCase()),
-		);
-		const exe = (last?.resolved ?? last?.name ?? "")
-			.split(/[\\/]/)
-			.pop()
-			?.toLowerCase()
-			.replace(/\.(exe|cmd|bat)$/, "");
-		const key = exe === "git" ? `git ${last?.args[0] ?? ""}` : (exe ?? "");
-		return MEANINGS[key]?.(code) ?? plain;
-	} catch {
-		return plain;
-	}
-}
-
-// The folder a finished command left behind; undefined if it didn't get
-// that far (a timeout, `exit`).
-function endedIn(pwdFile: string) {
-	try {
-		return readFileSync(pwdFile, "utf8").replace(/^\uFEFF/, "") || undefined;
-	} catch {
-		return undefined;
-	} finally {
-		rmSync(pwdFile, { force: true });
-	}
-}
-
-// What the model is told when a command goes to the background: Claude
-// Code's texts, one per reason.
-function backgroundText(
-	reason: Reason | "asked",
-	id: string,
-	path: string,
-	ms: number,
-) {
-	const head =
-		reason === "user"
-			? `Command was manually backgrounded by user with ID: ${id}. Output is being written to: ${path}.`
-			: reason === "message"
-				? `Command was moved to the background (ID: ${id}) so that a message that arrived while it was running can reach you; it was not interrupted. Output is being written to: ${path}.`
-				: reason === "timeout"
-					? `Command did not complete within its ${Math.max(1, Math.round(ms / 1000))}s timeout and was moved to the background (ID: ${id}). Output is being written to: ${path}.`
-					: `Command running in background with ID: ${id}. Output is being written to: ${path}.`;
-	if (reason === "user") return head;
-	if (reason === "asked")
-		return `${head} You will be notified when it completes — do not poll that file or sleep while waiting. Use read on that file only if the user asks for progress, or if you need a line it prints before you can go on, such as a server's ready line or port.`;
-	return `${head} You will be notified when it completes. To check interim output, use read on that file path.`;
-}
+export const meaning = (command: string, code: number) =>
+	meaningOf(parsePowerShell(command), code, MEANINGS, (n) => FORMATTERS.has(n));
 
 const SYNTAX_51 = `
 Windows PowerShell 5.1 syntax:
@@ -242,22 +168,7 @@ Temporary files (intermediate results, helper scripts, outputs that don't belong
 You can use run_in_background to run a command in the background. Only use this if you don't need the result immediately and are OK being notified when the command completes later. You do not need to check the output right away - you'll be notified when it finishes. Stop a background command with task_stop.
 
 Avoid unnecessary Start-Sleep: don't sleep between commands that can run immediately. If waiting for a background task you started with run_in_background, you will be notified when it completes — do not poll.`,
-	schema: Type.Object(
-		{
-			command: Type.String({ description: "The command to run." }),
-			description: Type.Union([Type.String(), Type.Null()], {
-				description: "What it does, in 5-10 words, or null.",
-			}),
-			timeout: Type.Union([Type.Integer({ minimum: 1 }), Type.Null()], {
-				description: `Timeout in milliseconds (at most ${MAX_TIMEOUT_MS}), or null for ${DEFAULT_TIMEOUT_MS}.`,
-			}),
-			run_in_background: Type.Union([Type.Boolean(), Type.Null()], {
-				description:
-					"true to run it in the background (you're notified when it ends), or null to wait for it.",
-			}),
-		},
-		{ additionalProperties: false },
-	),
+	schema: shellSchema,
 	deferred: false,
 	readOnly: false,
 	maxResultChars: SHELL_OUTPUT_MAX,
@@ -265,146 +176,32 @@ Avoid unnecessary Start-Sleep: don't sleep between commands that can run immedia
 	title: (i) => i.description ?? i.command,
 	// ponytail: /rewind can't undo what a command changes until 3.6 records
 	// changed, deleted and new files around each command.
-	async run({ command, description, timeout, run_in_background }, ctx) {
-		const { tasks } = ctx;
-		if (run_in_background && !tasks)
-			throw new Error("background commands aren't available here");
-		const ms = Math.min(timeout ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);
-		const pwdFile = join(tmpdir(), `manas-pwd-${randomUUID()}`);
-		const script =
-			(mustLead(command) ? "" : PREFIX) + command + suffix(pwdFile);
-		const env: Record<string, string | undefined> = {
-			...process.env,
-			[SCRIPT_VAR]: script,
-		};
-		env.NO_COLOR ??= "1";
-		env.PYTHONIOENCODING ??= "utf-8:surrogateescape";
-		const p = Bun.spawn(
-			[
-				SHELL,
-				"-NoProfile",
-				"-NonInteractive",
-				"-ExecutionPolicy",
-				"Bypass",
-				"-Command",
-				LAUNCHER,
-			],
+	async run(input, ctx) {
+		return runShell(
 			{
-				cwd: ctx.shell.cwd,
-				env,
-				stdin: "ignore",
-				stdout: "pipe",
-				stderr: "pipe",
+				spawn: (command, pwdFile) => ({
+					argv: [
+						SHELL,
+						"-NoProfile",
+						"-NonInteractive",
+						"-ExecutionPolicy",
+						"Bypass",
+						"-Command",
+						LAUNCHER,
+					],
+					env: {
+						[SCRIPT_VAR]:
+							(mustLead(command) ? "" : PREFIX) + command + suffix(pwdFile),
+					},
+				}),
+				stderr: fromClixml,
+				meaning,
+				parse: parsePowerShell,
+				cwd: (raw) => raw,
+				sleep: /^\s*(start-sleep|sleep)\b/i,
 			},
+			input,
+			ctx,
 		);
-		// The whole tree: a command may have started programs of its own.
-		const kill = () =>
-			Bun.spawnSync(["taskkill", "/T", "/F", "/PID", String(p.pid)]);
-		// Output as it comes: kept here while the call waits, sent to the
-		// task's file once the command is in the background.
-		let out = "";
-		let err = "";
-		let feed: ((s: string) => void) | undefined;
-		let bytes = 0;
-		let tooBig = false;
-		const pump = async (
-			stream: ReadableStream<Uint8Array>,
-			add: (s: string) => void,
-		) => {
-			const decoder = new TextDecoder();
-			const take = (s: string) => (feed ? feed(s) : add(s));
-			for await (const chunk of stream) {
-				// In the background the task counts instead.
-				bytes += chunk.length;
-				if (!feed && !tooBig && bytes > OUTPUT_KILL) {
-					tooBig = true;
-					kill();
-				}
-				take(decoder.decode(chunk, { stream: true }));
-			}
-			take(decoder.decode());
-		};
-		const exited = Promise.all([
-			pump(p.stdout, (s) => {
-				if (out.length < KEEP) out += s;
-			}),
-			pump(p.stderr, (s) => {
-				if (err.length < KEEP) err += s;
-			}),
-			p.exited,
-		]).then(([, , code]) => code);
-
-		// In the background the folder never moves (as in Claude Code).
-		const toBackground = async (reason: Reason | "asked") => {
-			ctx.signal.removeEventListener("abort", kill);
-			void exited.then(() => rmSync(pwdFile, { force: true }));
-			const task = (tasks as Tasks).adopt({
-				command,
-				description,
-				callId: ctx.callId ?? "",
-				initial: out + fromClixml(err),
-				kill,
-				ended: exited.then(async (code) => ({
-					code,
-					...(await meaning(command, code)),
-				})),
-			});
-			feed = task.feed;
-			const text = backgroundText(reason, task.id, task.outputFile, ms);
-			const moved = await parsePowerShell(command).then(
-				changesLocation,
-				() => false,
-			);
-			return moved
-				? `${text}\nSession cwd remains ${ctx.shell.cwd}; directory changes made by the backgrounded command do not apply to subsequent commands.`
-				: text;
-		};
-		if (run_in_background) return toBackground("asked");
-
-		// A timeout, Ctrl+B or a message arriving moves the command to the
-		// background; only a sleep is stopped at its timeout, as in Claude Code.
-		let move: (reason: Reason) => void = () => {};
-		const moved = new Promise<Reason>((resolve) => {
-			move = resolve;
-		});
-		const unregister = tasks?.foreground(move);
-		let timedOut = false;
-		const timer = setTimeout(() => {
-			if (tasks && !/^\s*(start-sleep|sleep)\b/i.test(command)) move("timeout");
-			else {
-				timedOut = true;
-				kill();
-			}
-		}, ms);
-		ctx.signal.addEventListener("abort", kill, { once: true });
-		const first = await Promise.race([exited.then(() => undefined), moved]);
-		clearTimeout(timer);
-		unregister?.();
-		if (first !== undefined) return toBackground(first);
-		ctx.signal.removeEventListener("abort", kill);
-		const code = await exited;
-		const parts = [out.trimEnd(), fromClixml(err).trimEnd()].filter(Boolean);
-		let failed = true;
-		if (tooBig) parts.push("Command was stopped: its output passed 5 GB.");
-		else if (timedOut)
-			parts.push(`Command timed out after ${ms / 1000} s and was stopped.`);
-		else {
-			const m = await meaning(command, code);
-			failed = m.failed;
-			if (m.failed) parts.push(`Command failed with exit code ${code}`);
-			else if (m.note) parts.push(m.note);
-		}
-		// The folder carries over inside the project, as in Claude Code.
-		const now = endedIn(pwdFile);
-		if (now !== undefined && now !== ctx.shell.cwd) {
-			if (within(now, ctx.cwd)) ctx.shell.cwd = now;
-			else {
-				ctx.shell.cwd = ctx.cwd;
-				parts.push(`Shell cwd was reset to ${ctx.cwd}`);
-			}
-		}
-		const text = parts.join("\n").replace(/\r\n/g, "\n") || "(no output)";
-		// An ok result comes back whole; callTool spills it if it's long.
-		return failed ? cut(text) : text;
 	},
 });

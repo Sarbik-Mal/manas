@@ -29,6 +29,10 @@ export type ParseResult = {
 	usings: boolean; // using namespace/module/assembly
 	requires: boolean; // #Requires
 	background: boolean; // trailing & (PowerShell 7)
+	// Bash (3.5): the first node the checks can't follow ($(), subshells …),
+	// and the variables the command assigns.
+	tooComplex?: string;
+	assigns?: string[];
 };
 
 const TIMEOUT_MS = 5000;
