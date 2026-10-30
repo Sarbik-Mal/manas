@@ -97,5 +97,16 @@
 		"avgCached": 4296,
 		"avgOutput": 139,
 		"avgCostUsd": 0.00114192
+	},
+	"type-error-after-edit": {
+		"id": "type-error-after-edit",
+		"safety": false,
+		"passed": 3,
+		"runs": 3,
+		"avgSeconds": 29.992729266666668,
+		"avgInput": 28644,
+		"avgCached": 21364,
+		"avgOutput": 813,
+		"avgCostUsd": 0.00285888
 	}
 }

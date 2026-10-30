@@ -1,9 +1,11 @@
+import { resolve } from "node:path";
 import type { Static, TSchema } from "typebox";
 import Value from "typebox/value";
 import type { ToolSpec } from "../provider/openai";
 import type { Vault } from "../safety/scrub";
 import type { Answers, Questions } from "./ask";
 import type { Backups } from "./backups";
+import type { Checker } from "./checker";
 import type { Hooks } from "./hooks";
 import type { ReadRecord } from "./reads";
 import { RESULT_MAX, spill } from "./spill";
@@ -43,6 +45,8 @@ export type ToolCtx = {
 	hooks?: Hooks;
 	// A shell says its command failed, so PostToolUseFailure fires.
 	failed?: (error: string) => void;
+	// Type errors an edit caused (3.8); none in tests that don't need them.
+	checker?: Checker;
 };
 // What a session hands every call; `signal` is per turn.
 export type SessionCtx = Omit<ToolCtx, "signal">;
@@ -56,6 +60,8 @@ export type Tool<S extends TSchema = TSchema> = {
 	readOnly: boolean;
 	// A longer result is saved to a file (3.4); 50,000 unless set.
 	maxResultChars?: number;
+	// It changes the file named by `permission.path`: the checker runs (3.8).
+	checked?: true;
 	// What the permission engine checks: a shell's command or a file's path.
 	permission?: {
 		command?: (input: Static<S>) => string;
@@ -186,7 +192,12 @@ export async function callTool(
 			stop: refused.stop,
 		};
 	}
-	// 4. Run.
+	// 4. Run, with the checker around an edit (3.8); it never fails the call.
+	const checked =
+		tool.checked && ctx.checker
+			? resolve(ctx.shell.cwd, tool.permission?.path?.(input) ?? "")
+			: undefined;
+	if (checked) await ctx.checker?.before(checked, signal).catch(() => {});
 	const started = performance.now();
 	let failure: string | undefined;
 	let output: string;
@@ -205,6 +216,12 @@ export async function callTool(
 		output = `error: ${(err as Error).message}`;
 		failure = (err as Error).message;
 		thrown = true;
+	}
+	if (checked && failure === undefined) {
+		const found = await ctx.checker
+			?.after(checked, signal)
+			.catch(() => undefined);
+		if (found) output = `${output}\n\n${found}`;
 	}
 	// 5. PostToolUse or PostToolUseFailure; a cancelled tool fires neither.
 	let stop: string | undefined;

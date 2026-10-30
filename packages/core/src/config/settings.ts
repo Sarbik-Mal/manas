@@ -163,6 +163,8 @@ const KEYS = {
 	),
 	hooks: Type.Record(Type.String(), Type.Array(HookMatcher)),
 	disableAllHooks: Type.Boolean(),
+	// false: no type check after an edit (3.8; Claude's `diagnostics: false`).
+	checkers: Type.Boolean(),
 } satisfies Record<string, TSchema>;
 
 type Keys = typeof KEYS;

@@ -207,6 +207,7 @@ const plans = new WeakMap<object, Plan>();
 
 export const edit = defineTool({
 	name: "edit",
+	checked: true,
 	description:
 		"Replaces exact text in a file. Read the file first in this conversation, or the edit fails. " +
 		"old_string must match the file exactly, including indentation, and appear once; leave out read's line-number prefix (number + tab). " +

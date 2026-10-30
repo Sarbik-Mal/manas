@@ -53,6 +53,7 @@ const plans = new WeakMap<object, Plan>();
 
 export const write = defineTool({
 	name: "write",
+	checked: true,
 	description:
 		"Creates a file, or replaces one completely. To change part of a file, use edit. " +
 		"An existing file must be read first in this conversation, or the write fails. Missing folders are created.",

@@ -1,0 +1,20 @@
+# Milestone 3 (3.8): a change that breaks callers in other files. The checker
+# reports them in the edit result, and the model fixes them. The fixture's one
+# old error (TS2591, `process` in src/index.ts) stays out of the report.
+task = "In src/discounts.ts, make the discount parameter of applyDiscount required instead of optional. Keep the project compiling."
+fixture = "ts-shop"
+mode = "acceptEdits"
+link_modules = true
+sets = ["full"]
+limits = { cost_usd = 0.05 }
+
+[[check]]
+type = "file"
+path = "src/discounts.ts"
+contains = "discount: Discount"
+
+# Nothing but the old error.
+[[check]]
+type = "command"
+run = "$o = node_modules/.bin/tsc --noEmit -p tsconfig.json; if ($o | Where-Object { $_ -notmatch 'TS2591' }) { $o; exit 1 } else { exit 0 }"
+expect = 0

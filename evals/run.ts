@@ -8,7 +8,9 @@ import {
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
+	rmdirSync,
 	rmSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -51,6 +53,8 @@ type Case = {
 	rewind?: "code" | "conversation" | "both";
 	// NAME = kind: `{{NAME}}` in fixture files becomes a fresh fake secret.
 	secrets?: Record<string, keyof typeof SECRET>;
+	// The repo's node_modules as a junction, for a case that needs its tsc.
+	link_modules?: boolean;
 	check: Check[];
 };
 type Usage = { input: number; cached: number; output: number };
@@ -200,6 +204,12 @@ async function runOnce(c: Case): Promise<Run> {
 			]),
 		);
 		cpSync(join(EVALS, "fixtures", c.fixture), dir, { recursive: true });
+		if (c.link_modules)
+			symlinkSync(
+				join(EVALS, "..", "node_modules"),
+				join(dir, "node_modules"),
+				"junction",
+			);
 		fillSecrets(dir, secrets);
 		for (const [path, to] of Object.entries(c.convert ?? {}))
 			convert(join(dir, path), to);
@@ -444,6 +454,8 @@ async function runOnce(c: Case): Promise<Run> {
 	} finally {
 		proc.kill();
 		await proc.exited;
+		// The link alone first: rmdir never touches what it points at.
+		if (c.link_modules) rmdirSync(join(dir, "node_modules"));
 		rmSync(dir, { recursive: true, force: true });
 		rmSync(home, { recursive: true, force: true });
 	}

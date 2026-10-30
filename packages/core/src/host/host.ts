@@ -56,6 +56,7 @@ import {
 } from "../session/store";
 import type { Answers, Questions } from "../tools/ask";
 import { openBackups } from "../tools/backups";
+import { openChecker } from "../tools/checker";
 import { gitBash } from "../tools/gitbash";
 import { openHooks } from "../tools/hooks";
 import { readRecord } from "../tools/reads";
@@ -579,6 +580,12 @@ export function createHost(
 				shell,
 				tasks,
 				hooks,
+				checker: openChecker({
+					cwd,
+					cache: join(own, "checker"),
+					enabled: () => settings.current.settings.checkers !== false,
+					denied: (path) => deniedPath(path, settings.current.rules, cwd),
+				}),
 				denied: (path) => deniedPath(path, settings.current.rules, cwd),
 				reads: readRecord(loaded?.reads, (r) => store.read(r)),
 				vault: v,
