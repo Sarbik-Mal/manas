@@ -256,10 +256,33 @@ export function preview(files: Change[], st: Style) {
 		.join("\n");
 }
 
+// What a code rewind can't put back (3.6).
+type Lost = { unrestorable: string[]; untracked: boolean };
+export function lost(r: Lost, st: Style) {
+	return [
+		...(r.unrestorable.length > 0
+			? [
+					red(
+						`Can't be restored (a command changed them and Manas had no copy): ${r.unrestorable.join(", ")}`,
+						st,
+					),
+				]
+			: []),
+		...(r.untracked
+			? [
+					dim(
+						"New files weren't tracked for some commands: the project has over 100,000 files.",
+						st,
+					),
+				]
+			: []),
+	];
+}
+
 // The result of a rewind, failures in red.
 export function rewound(
 	scope: string,
-	r: { restored: string[]; failed: { path: string; error: string }[] },
+	r: { restored: string[]; failed: { path: string; error: string }[] } & Lost,
 	st: Style,
 ) {
 	const n = r.restored.length;
@@ -272,7 +295,7 @@ export function rewound(
 	const failed = r.failed.map((f) =>
 		red(`Couldn't restore ${f.path}: ${f.error}`, st),
 	);
-	return [parts.join(" "), ...failed].join("\n");
+	return [parts.join(" "), ...failed, ...lost(r, st)].join("\n");
 }
 
 // `manas sessions`: the id first, for `--resume <id>`.

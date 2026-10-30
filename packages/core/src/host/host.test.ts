@@ -895,6 +895,8 @@ test("checkpoints/list, checkpoints/preview and session/rewind; errors for unkno
 		(await ask("checkpoints/preview", { checkpoint_id: "c1" })).result,
 	).toEqual({
 		files: [{ path: "a.ts", action: "restore", added: 1, removed: 1 }],
+		unrestorable: [],
+		untracked: false,
 	});
 	expect(await ask("checkpoints/preview", { checkpoint_id: "c9" })).toEqual(
 		error("not_found"),
@@ -902,7 +904,13 @@ test("checkpoints/list, checkpoints/preview and session/rewind; errors for unkno
 	expect(
 		(await ask("session/rewind", { checkpoint_id: "c1", scope: "both" }))
 			.result,
-	).toEqual({ prompt: "bump x", restored: ["a.ts"], failed: [] });
+	).toEqual({
+		prompt: "bump x",
+		restored: ["a.ts"],
+		failed: [],
+		unrestorable: [],
+		untracked: false,
+	});
 	expect(readFileSync(join(project, "a.ts"), "utf8")).toBe("let x = 1;\n");
 
 	// A turn that waits on an approval is still running: rewind is refused.

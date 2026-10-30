@@ -42,6 +42,10 @@ export type Checkpoint = {
 	// Its prompt was rewound away (a conversation rewind): no longer listed,
 	// but still used to find a later-touched file's earliest state.
 	cut?: boolean;
+	// Files a command changed with no copy to go back to (3.6).
+	lost?: string[];
+	// A command ran without a scan, so new files weren't noticed.
+	untracked?: boolean;
 };
 export type Undo = {
 	kind: "undo" | "redo";
@@ -62,9 +66,13 @@ export type Change = {
 type Line =
 	| ({ kind: "checkpoint" } & Checkpoint)
 	| { kind: "file"; checkpoint: string; path: string; blob: string | null }
-	| { kind: "cut"; from: string };
+	| { kind: "cut"; from: string }
+	| { kind: "lost"; checkpoint: string; path: string }
+	| { kind: "untracked"; checkpoint: string };
 
 const KEEP = 100; // Claude Code's
+// Past this a file gets no line counts: diffing it would stall the preview.
+const COUNT_MAX = 1024 ** 2;
 
 export function openBackups(root: string, sessionId: string) {
 	const blobs = join(root, "blobs");
@@ -92,6 +100,12 @@ export function openBackups(root: string, sessionId: string) {
 			for (const p of Object.keys(c.files)) track(p);
 		} else if (line.kind === "cut") {
 			cutFrom(line.from);
+		} else if (line.kind === "lost") {
+			const c = checkpoints.find((x) => x.id === line.checkpoint);
+			if (c) c.lost = [...(c.lost ?? []), line.path];
+		} else if (line.kind === "untracked") {
+			const c = checkpoints.find((x) => x.id === line.checkpoint);
+			if (c) c.untracked = true;
 		} else {
 			const c = checkpoints.find((x) => x.id === line.checkpoint);
 			if (c) c.files[line.path] = line.blob;
@@ -136,10 +150,11 @@ export function openBackups(root: string, sessionId: string) {
 			const then = blob === null ? null : readBlob(blob);
 			let added = 0;
 			let removed = 0;
-			for (const part of diffLines(textOf(now), textOf(then))) {
-				if (part.added) added += part.count ?? 0;
-				if (part.removed) removed += part.count ?? 0;
-			}
+			if ((now?.length ?? 0) <= COUNT_MAX && (then?.length ?? 0) <= COUNT_MAX)
+				for (const part of diffLines(textOf(now), textOf(then))) {
+					if (part.added) added += part.count ?? 0;
+					if (part.removed) removed += part.count ?? 0;
+				}
 			const action =
 				blob === null ? "delete" : now === null ? "recreate" : "restore";
 			out.push({ path, blob, action, added, removed });
@@ -208,17 +223,44 @@ export function openBackups(root: string, sessionId: string) {
 			}
 			return c.id;
 		},
-		// Before edit or write changes `path`: `bytes` as it is now, or null if
-		// it doesn't exist. Once per file per turn; the checkpoint already holds
-		// a file it tracked before this turn.
-		before(path: string, bytes: Uint8Array | null) {
-			const c = checkpoints.at(-1);
-			if (!c) throw new Error("no checkpoint to back up into");
+		// Before edit, write or a command changes `path`: `bytes` as it is now,
+		// or null if it doesn't exist. Once per file per turn; the checkpoint
+		// already holds a file it tracked before this turn. `id`: a background
+		// command's starting checkpoint, which may be trimmed by now.
+		before(path: string, bytes: Uint8Array | null, id?: string) {
+			const c = id ? checkpoints.find((x) => x.id === id) : checkpoints.at(-1);
+			if (!c) {
+				if (id) return;
+				throw new Error("no checkpoint to back up into");
+			}
 			if (tracked.has(fileKey(path))) return;
 			const blob = bytes === null ? null : store(bytes);
 			c.files[path] = blob;
 			track(path);
 			append({ kind: "file", checkpoint: c.id, path, blob });
+		},
+		tracks: (path: string) => tracked.has(fileKey(path)),
+		// A command changed `path` and there's no copy: /rewind says so (3.6).
+		lost(path: string, id: string) {
+			const c = checkpoints.find((x) => x.id === id);
+			if (!c || tracked.has(fileKey(path)) || c.lost?.includes(path)) return;
+			c.lost = [...(c.lost ?? []), path];
+			append({ kind: "lost", checkpoint: id, path });
+		},
+		untracked(id: string) {
+			const c = checkpoints.find((x) => x.id === id);
+			if (!c || c.untracked) return;
+			c.untracked = true;
+			append({ kind: "untracked", checkpoint: id });
+		},
+		// What a rewind to `id` can't put back.
+		unrestorable(id: string) {
+			const at = checkpoints.findIndex((c) => c.id === id);
+			const later = at < 0 ? [] : checkpoints.slice(at);
+			return {
+				unrestorable: [...new Set(later.flatMap((c) => c.lost ?? []))],
+				untracked: later.some((c) => c.untracked),
+			};
 		},
 		list: (): readonly Checkpoint[] => checkpoints,
 		blobPath: (hash: string) => join(blobs, hash),
@@ -264,6 +306,10 @@ function textOf(bytes: Uint8Array | null) {
 export const NO_BACKUPS: Backups = {
 	checkpoint: async () => "",
 	before: () => {},
+	tracks: () => false,
+	lost: () => {},
+	untracked: () => {},
+	unrestorable: () => ({ unrestorable: [], untracked: false }),
 	list: () => [],
 	blobPath: (hash) => hash,
 	preview: async () => undefined,

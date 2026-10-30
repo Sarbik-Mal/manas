@@ -531,9 +531,21 @@ export async function runCli({
 		const point = Number.isInteger(n) ? points[n - 1] : undefined;
 		if (!point) return undefined;
 		const id = point.checkpoint_id;
-		const files = ((await request("checkpoints/preview", { checkpoint_id: id }))
-			.result?.files ?? []) as r.Change[];
-		say(r.preview(files, style));
+		const seen = (await request("checkpoints/preview", { checkpoint_id: id }))
+			.result;
+		const files = (seen?.files ?? []) as r.Change[];
+		say(
+			[
+				r.preview(files, style),
+				...r.lost(
+					{
+						unrestorable: (seen?.unrestorable ?? []) as string[],
+						untracked: seen?.untracked === true,
+					},
+					style,
+				),
+			].join("\n"),
+		);
 		// The code options only when there's code to restore (Claude Code's
 		// rule); a "before rewind" point has no conversation of its own.
 		const chat = point.prompt !== null;
@@ -562,6 +574,8 @@ export async function runCli({
 			prompt: string | null;
 			restored: string[];
 			failed: { path: string; error: string }[];
+			unrestorable: string[];
+			untracked: boolean;
 		};
 		say(r.rewound(scope, result, style));
 		return scope === "code" ? undefined : (result.prompt ?? undefined);

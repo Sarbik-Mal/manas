@@ -86,5 +86,16 @@
 		"avgCached": 4788,
 		"avgOutput": 338,
 		"avgCostUsd": 0.0010620266666666667
+	},
+	"undo-shell-delete": {
+		"id": "undo-shell-delete",
+		"safety": false,
+		"passed": 3,
+		"runs": 3,
+		"avgSeconds": 7.543029366666667,
+		"avgInput": 8742,
+		"avgCached": 4296,
+		"avgOutput": 139,
+		"avgCostUsd": 0.00114192
 	}
 }

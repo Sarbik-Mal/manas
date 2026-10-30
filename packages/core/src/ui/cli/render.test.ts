@@ -5,6 +5,15 @@ import * as r from "./render";
 const uni = { unicode: true, color: false };
 const ascii = { unicode: false, color: false };
 
+test("a rewind lists what it can't put back", () => {
+	const lost = { unrestorable: ["a.txt", "b.txt"], untracked: true };
+	const text = r.rewound("code", { restored: [], failed: [], ...lost }, uni);
+	expect(text).toBe(
+		"Restored 0 files.\nCan't be restored (a command changed them and Manas had no copy): a.txt, b.txt\nNew files weren't tracked for some commands: the project has over 100,000 files.",
+	);
+	expect(r.lost({ unrestorable: [], untracked: false }, uni)).toEqual([]);
+});
+
 test("tool rows: first string field or short JSON, cut, Claude's symbols", () => {
 	expect(r.toolStarted("read", { path: "src/app.ts", limit: null }, uni)).toBe(
 		"⏺ read(src/app.ts)",

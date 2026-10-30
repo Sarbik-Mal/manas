@@ -199,6 +199,14 @@ export function createSession({
 		const rel = toolCtx ? relative(toolCtx.cwd, p) : p;
 		return rel.startsWith("..") || isAbsolute(rel) ? p : rel;
 	};
+	// What a code rewind to `id` can't put back (3.6).
+	const unrestorable = (id: string) => {
+		const r = backups?.unrestorable(id);
+		return {
+			unrestorable: (r?.unrestorable ?? []).map(shown),
+			untracked: r?.untracked ?? false,
+		};
+	};
 	// The points /rewind can go back to, oldest first: each prompt still in
 	// the conversation (its checkpoint sits just before it), then the undo of
 	// the last code rewind, only while nothing has happened since (undoing an
@@ -265,6 +273,7 @@ export function createSession({
 				path: shown(c.path),
 			}));
 		},
+		unrestorable,
 		// /rewind (2.6): code, conversation or both back to before checkpoint
 		// `id`'s prompt. A code rewind first saves the files as they are now as
 		// an undo point; using that saves a redo point, so it flips back and forth.
@@ -276,6 +285,10 @@ export function createSession({
 				throw new Error(`an ${point.undo.kind} point has only code to restore`);
 			let restored: string[] = [];
 			let failed: { path: string; error: string }[] = [];
+			const lost =
+				scope === "conversation"
+					? { unrestorable: [], untracked: false }
+					: unrestorable(id);
 			if (scope !== "conversation" && backups) {
 				const changes = (await backups.preview(id)) ?? [];
 				if (changes.length > 0) {
@@ -313,6 +326,7 @@ export function createSession({
 				prompt: point.prompt,
 				restored: restored.map(shown),
 				failed: failed.map((f) => ({ ...f, path: shown(f.path) })),
+				...lost,
 			};
 		},
 		get busy() {

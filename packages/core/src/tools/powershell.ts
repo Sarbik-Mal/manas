@@ -1,3 +1,4 @@
+import { readOnly } from "../permissions/engine";
 import { parsePowerShell } from "../permissions/powershell";
 import { defineTool } from "./registry";
 import {
@@ -174,8 +175,6 @@ Avoid unnecessary Start-Sleep: don't sleep between commands that can run immedia
 	maxResultChars: SHELL_OUTPUT_MAX,
 	permission: { command: (i) => i.command },
 	title: (i) => i.description ?? i.command,
-	// ponytail: /rewind can't undo what a command changes until 3.6 records
-	// changed, deleted and new files around each command.
 	async run(input, ctx) {
 		return runShell(
 			{
@@ -197,6 +196,8 @@ Avoid unnecessary Start-Sleep: don't sleep between commands that can run immedia
 				stderr: fromClixml,
 				meaning,
 				parse: parsePowerShell,
+				readOnly,
+				path: (arg) => arg,
 				cwd: (raw) => raw,
 				sleep: /^\s*(start-sleep|sleep)\b/i,
 			},

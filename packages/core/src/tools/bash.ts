@@ -1,4 +1,5 @@
 import { parseBash, toPosix, toWindows } from "../permissions/bash";
+import { bashReadOnly } from "../permissions/readonly";
 import { defineTool } from "./registry";
 import {
 	DEFAULT_TIMEOUT_MS,
@@ -112,6 +113,8 @@ Avoid unnecessary sleep: don't sleep between commands that can run immediately. 
 					meaning: (command, code) =>
 						meaningOf(parseBash(command), code, MEANINGS),
 					parse: parseBash,
+					readOnly: (p) => p.plain && bashReadOnly(p.name ?? "", p.args),
+					path: toWindows,
 					cwd: toWindows,
 					sleep: /^\s*sleep\b/,
 				},

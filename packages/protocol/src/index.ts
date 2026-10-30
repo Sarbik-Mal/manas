@@ -197,6 +197,10 @@ export const Results = {
 				removed: Type.Integer(),
 			}),
 		),
+		// Files a command changed with no copy to go back to.
+		unrestorable: Type.Array(Type.String()),
+		// A command ran without a scan, so new files weren't noticed.
+		untracked: Type.Boolean(),
 	}),
 	// `prompt`: the rewound prompt, for the input box (conversation rewinds).
 	"session/rewind": Type.Object({
@@ -205,6 +209,8 @@ export const Results = {
 		failed: Type.Array(
 			Type.Object({ path: Type.String(), error: Type.String() }),
 		),
+		unrestorable: Type.Array(Type.String()),
+		untracked: Type.Boolean(),
 	}),
 	"tasks/list": Type.Object({
 		tasks: Type.Array(

@@ -1,0 +1,14 @@
+# Milestone 3 (3.6): a file deleted by a shell command comes back with a
+# code rewind, though no edit tool ever touched it.
+task = "Delete src/cart.ts with a shell command. Don't change anything else."
+fixture = "ts-bugs"
+mode = "acceptEdits"
+rewind = "code"
+# Some spellings of the delete ask even in this mode; the test is the rewind.
+answers = { permissions = "allow" }
+sets = ["full"]
+limits = { cost_usd = 0.05 }
+
+[[check]]
+type = "unchanged"
+path = "src/cart.ts"

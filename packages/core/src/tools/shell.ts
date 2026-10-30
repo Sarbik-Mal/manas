@@ -8,6 +8,7 @@ import { within } from "../permissions/engine";
 import type { ParseResult } from "../permissions/powershell";
 import type { ToolCtx } from "./registry";
 import type { Reason, Tasks } from "./tasks";
+import { type Watched, watchCommand } from "./watch";
 
 // What PowerShell and bash share (3.5): how a command runs, goes to the
 // background, carries the folder over and comes back. Each shell gives its
@@ -123,7 +124,7 @@ export const shellSchema = Type.Object(
 	{ additionalProperties: false },
 );
 
-export type ShellSpec = {
+export type ShellSpec = Watched & {
 	// The process to start; the script travels in its environment.
 	spawn: (
 		command: string,
@@ -131,7 +132,6 @@ export type ShellSpec = {
 	) => { argv: string[]; env: Record<string, string> };
 	stderr: (s: string) => string;
 	meaning: (command: string, code: number) => Promise<Meaning>;
-	parse: (command: string) => Promise<ParseResult>;
 	// The pwd file's text as a Windows path.
 	cwd: (raw: string) => string;
 	// Stopped at its timeout instead of going to the background.
@@ -157,6 +157,7 @@ export async function runShell(
 	if (run_in_background && !tasks)
 		throw new Error("background commands aren't available here");
 	const ms = Math.min(timeout ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);
+	const watched = await watchCommand(command, spec, ctx);
 	const pwdFile = join(tmpdir(), `manas-pwd-${randomUUID()}`);
 	const { argv, env: own } = spec.spawn(command, pwdFile);
 	const env: Record<string, string | undefined> = { ...process.env, ...own };
@@ -216,10 +217,10 @@ export async function runShell(
 			callId: ctx.callId ?? "",
 			initial: out + spec.stderr(err),
 			kill,
-			ended: exited.then(async (code) => ({
-				code,
-				...(await spec.meaning(command, code)),
-			})),
+			ended: exited.then(async (code) => {
+				await watched?.();
+				return { code, ...(await spec.meaning(command, code)) };
+			}),
 		});
 		feed = task.feed;
 		const text = backgroundText(reason, task.id, task.outputFile, ms);
@@ -252,6 +253,7 @@ export async function runShell(
 	if (first !== undefined) return toBackground(first);
 	ctx.signal.removeEventListener("abort", kill);
 	const code = await exited;
+	await watched?.();
 	const parts = [out.trimEnd(), spec.stderr(err).trimEnd()].filter(Boolean);
 	let failed = true;
 	if (tooBig) parts.push("Command was stopped: its output passed 5 GB.");

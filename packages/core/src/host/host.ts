@@ -368,7 +368,10 @@ export function createHost(
 		async "checkpoints/preview"({ checkpoint_id }) {
 			const s = need();
 			known(s, checkpoint_id);
-			return { files: await s.preview(checkpoint_id) };
+			return {
+				files: await s.preview(checkpoint_id),
+				...s.unrestorable(checkpoint_id),
+			};
 		},
 		async "session/rewind"({ checkpoint_id, scope }) {
 			const s = need();

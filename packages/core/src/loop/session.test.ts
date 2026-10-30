@@ -479,6 +479,8 @@ test("rewind code: files back, a note for the model, and it can be undone", asyn
 		prompt: "bump x",
 		restored: ["a.ts"],
 		failed: [],
+		unrestorable: [],
+		untracked: false,
 	});
 	expect(r.file()).toBe("let x = 1;\n");
 	expect(r.session.history.at(-1)).toEqual({
@@ -558,6 +560,8 @@ test("rewind conversation only keeps the code; a running turn can't be rewound",
 		prompt: "bump",
 		restored: [],
 		failed: [],
+		unrestorable: [],
+		untracked: false,
 	});
 	expect(r.file()).toBe("let x = 2;\n");
 	expect(r.session.history).toHaveLength(0);
