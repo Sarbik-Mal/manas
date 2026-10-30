@@ -57,6 +57,7 @@ import {
 import type { Answers, Questions } from "../tools/ask";
 import { openBackups } from "../tools/backups";
 import { gitBash } from "../tools/gitbash";
+import { openHooks } from "../tools/hooks";
 import { readRecord } from "../tools/reads";
 import { buildRegistry, describeErrors, type Tool } from "../tools/registry";
 import { openTasks, type Tasks } from "../tools/tasks";
@@ -114,6 +115,7 @@ export function createHost(
 	let session: Session | undefined;
 	let tasks: Tasks | undefined;
 	let scratch: string | undefined;
+	let endSession: ((reason: string) => Promise<void>) | undefined;
 	let sessionId: string | null = null;
 	let seq = 0;
 	let lastState: string | undefined;
@@ -153,9 +155,9 @@ export function createHost(
 		event("state/changed", { state, mode });
 	};
 	// A core → front end request. It never times out; interrupt cancels it.
-	function request(type: string, data: object): Promise<unknown> {
+	function requestWithId(type: string, data: object) {
 		const id = `c${++requests}`;
-		const result = new Promise((resolve, reject) =>
+		const result = new Promise<unknown>((resolve, reject) =>
 			pending.set(id, { resolve, reject }),
 		);
 		write({
@@ -167,8 +169,16 @@ export function createHost(
 			...data,
 		});
 		updateState();
-		return result;
+		return { id, result };
 	}
+	const request = (type: string, data: object) =>
+		requestWithId(type, data).result;
+	// One request taken back: a hook answered first (3.7).
+	const withdraw = (id: string, reason: string) => {
+		if (!pending.delete(id)) return;
+		write({ kind: "cancel", id, reason });
+		updateState();
+	};
 	const cancelPending = (reason: string) => {
 		for (const [id, p] of pending) {
 			pending.delete(id);
@@ -538,10 +548,28 @@ export function createHost(
 					output_file: f.outputFile,
 				}),
 		});
+		const hooks = openHooks({
+			settings: () => settings.current.settings,
+			cwd,
+			here: () => shell.cwd,
+			vault: v,
+			sessionId: id,
+			transcript: file,
+			scratch: pad,
+			results: join(dirname(vaultFile), "tool-results"),
+			mode: () => mode,
+			effort: () => session?.effort,
+			notice,
+		});
+		endSession = (reason) => hooks.sessionEnd(reason);
 		const s = createSession({
 			registry,
 			vault: v,
 			ready,
+			// In the background; the first turn waits for it, as in Claude Code.
+			opening: ready.then(() =>
+				hooks.sessionStart(loaded ? "resume" : "startup", model),
+			),
 			context: () =>
 				firstMessage(cwd, undefined, pad, registry.tools.has("bash")),
 			verbosity,
@@ -550,6 +578,7 @@ export function createHost(
 				cwd,
 				shell,
 				tasks,
+				hooks,
 				denied: (path) => deniedPath(path, settings.current.rules, cwd),
 				reads: readRecord(loaded?.reads, (r) => store.read(r)),
 				vault: v,
@@ -559,20 +588,33 @@ export function createHost(
 				// Beside the vault: sessions/<id>/tool-results (3.4).
 				results: join(dirname(vaultFile), "tool-results"),
 			},
-			permit: async ({ tool, input, callId, diff }) => {
-				const d = await decide(tool, input, {
-					rules: settings.current.rules,
-					session: sessionRules,
-					cwd,
-					here: shell.cwd,
-					mode,
-					scratch: pad,
-				});
+			permit: async ({ tool, input, callId, diff, hook }) => {
+				const check = (value: unknown) =>
+					decide(tool, value, {
+						rules: settings.current.rules,
+						session: sessionRules,
+						cwd,
+						here: shell.cwd,
+						mode,
+						scratch: pad,
+					});
+				let d = await check(input);
+				// A PreToolUse hook (3.7): its allow beats the mode and the default
+				// prompt, not a deny, an ask rule or an always-ask check.
+				if (hook?.decision === "allow" && d.behavior === "ask" && !d.strict)
+					return undefined;
+				if (hook?.decision === "ask" && d.behavior !== "deny")
+					d = {
+						behavior: "ask",
+						reason: hook.reason ?? "a hook asks first",
+						suggestions: d.behavior === "ask" ? d.suggestions : [],
+						strict: d.behavior === "ask" && d.strict,
+					};
 				if (d.behavior === "allow") return undefined;
 				if (d.behavior === "deny") return { output: d.reason };
-				let answer: unknown;
-				try {
-					answer = await request("permission/request", {
+				const { id: asked, result: prompted } = requestWithId(
+					"permission/request",
+					{
 						tool_call_id: callId,
 						tool: tool.name,
 						input,
@@ -582,9 +624,47 @@ export function createHost(
 						diff: diff ?? null,
 						reason: d.reason,
 						suggestions: d.suggestions,
+					},
+				);
+				// PermissionRequest hooks race the prompt, as in Claude Code: whoever
+				// decides first applies. One with no say leaves the prompt up.
+				const never = new Promise<never>(() => {});
+				const racing = new AbortController();
+				const strict = d.strict;
+				const hooked = hooks
+					.permission(tool, input, d.suggestions, racing.signal)
+					.catch(() => undefined)
+					.then(async (h) => {
+						if (!h) return never;
+						if (h.behavior === "deny") return h;
+						if (strict) return never;
+						const next = h.input ?? input;
+						const again = await check(next);
+						const held =
+							again.behavior === "deny" ||
+							(again.behavior === "ask" && again.strict);
+						return held ? never : { ...h, input: next };
 					});
+				let answer: unknown;
+				try {
+					const first = await Promise.race([
+						prompted.then((a) => ({ answer: a })),
+						hooked.then((h) => ({ hook: h })),
+					]);
+					if ("hook" in first) {
+						withdraw(asked, "a hook decided");
+						const h = first.hook;
+						if (h.behavior === "allow") return { input: h.input };
+						return {
+							output: h.message ?? "denied by a PermissionRequest hook",
+							stop: h.interrupt,
+						};
+					}
+					answer = first.answer;
 				} catch {
 					return { output: "interrupted by user" }; // cancelled
+				} finally {
+					racing.abort(); // the user answered: the hooks stop
 				}
 				if (!Value.Check(CoreResults["permission/request"], answer)) {
 					notice(
@@ -828,11 +908,13 @@ export function createHost(
 			notice("error", `unknown line kind ${JSON.stringify(kind)}`);
 		},
 		request,
-		// The front end went away: stop work, withdraw requests.
-		close() {
+		// The front end went away: stop work, withdraw requests. Resolves once
+		// SessionEnd hooks are done; they get a short budget (3.7).
+		async close(reason = "other") {
 			unsubscribe();
 			session?.interrupt(true);
 			tasks?.killAll();
+			const ending = endSession?.(reason);
 			// The scratchpad and its parents, once empty; files in it stay
 			// with the session (the cleanup deletes them with it).
 			if (scratch)
@@ -842,6 +924,7 @@ export function createHost(
 					rmdirSync(dirname(dirname(scratch)));
 				} catch {}
 			cancelPending("closed");
+			await ending;
 		},
 	};
 

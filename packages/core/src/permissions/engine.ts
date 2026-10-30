@@ -43,7 +43,13 @@ export type Suggestion =
 export type Decision =
 	| { behavior: "allow"; reason: string }
 	| { behavior: "deny"; reason: string; rule: string }
-	| { behavior: "ask"; reason: string; suggestions: Suggestion[] };
+	| {
+			behavior: "ask";
+			reason: string;
+			suggestions: Suggestion[];
+			// An ask rule or an always-ask check: a hook's allow doesn't beat it.
+			strict?: boolean;
+	  };
 export type Context = {
 	rules: Rules;
 	session: Rule[]; // "don't ask again this session"
@@ -159,6 +165,7 @@ export async function decide(
 				behavior: "ask",
 				reason: `your settings ask first (${rule.text})`,
 				suggestions: [],
+				strict: true,
 			};
 		}
 	}
@@ -169,6 +176,7 @@ export async function decide(
 			behavior: "ask",
 			reason: "the command is longer than 10,000 characters",
 			suggestions: [],
+			strict: true,
 		};
 	// The scratchpad's files are the session's own, in every mode (Claude
 	// Code's rule); protected names there still ask.
@@ -191,7 +199,8 @@ export async function decide(
 	if (parsed) {
 		// Asks whatever specific allow rules say; approved once only.
 		const flag = bash ? flaggedBash(parsed) : flagged(parsed);
-		if (flag) return { behavior: "ask", reason: flag, suggestions: [] };
+		if (flag)
+			return { behavior: "ask", reason: flag, suggestions: [], strict: true };
 		// After a cd, relative paths can't be checked against the folder the
 		// command started in (Claude Code asks there too).
 		const lowkey = ctx.mode === "acceptEdits" && !changesLocation(parsed);
@@ -232,6 +241,10 @@ export async function decide(
 	return {
 		behavior: "ask",
 		reason: `${tool.name} can change things`,
+		...(target !== undefined &&
+			protectedPath(resolve(here, target)) && {
+				strict: true,
+			}),
 		suggestions: [
 			editable
 				? { mode: "acceptEdits" }
@@ -246,6 +259,35 @@ export async function decide(
 		],
 	};
 }
+
+// A hook's `if` (3.7): one rule against this call. A command that can't be
+// parsed runs the hook; the filter is only best-effort (Claude Code's word).
+export async function matchesIf(
+	text: string,
+	tool: Checked,
+	input: unknown,
+	cwd: string,
+	here: string,
+) {
+	const r = parseRule(text);
+	if (!r || !covers(r.tool, tool.name)) return false;
+	if (r.specifier === undefined) return true;
+	const spec = r.specifier;
+	const command = tool.permission?.command?.(input);
+	if (command !== undefined) {
+		const parsed = await parse(command, toolKey(tool.name) === "bash");
+		if (parsed.errors.length > 0 || parsed.tooComplex) return true;
+		return parsed.commands.some((p) => commandMatches(spec, p));
+	}
+	const target = tool.permission?.path?.(input);
+	if (target === undefined) return false;
+	const path = posix(resolve(here, target));
+	return pathMatches(spec, path, cwd, cwd, homedir());
+}
+
+// Under a name lowkey still asks about, anywhere on the path.
+const protectedPath = (abs: string) =>
+	abs.split(/[\\/]/).some((part) => PROTECTED.has(part.toLowerCase()));
 
 // `abs` is `cwd` or inside it, once links are followed.
 export function within(abs: string, cwd: string) {
@@ -563,7 +605,11 @@ function suggestPath(toolName: string, path: string, cwd: string) {
 	return `${covers("edit", toolName) ? "Edit" : ruleName(toolName)}(${spec})`;
 }
 
-const ruleName = (name: string) =>
+// `edit` → Edit, `task_stop` → TaskStop; hooks match on these too (3.7).
+export const ruleName = (name: string) =>
 	name === "powershell"
 		? "PowerShell"
-		: name.charAt(0).toUpperCase() + name.slice(1);
+		: name
+				.split("_")
+				.map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+				.join("");

@@ -109,6 +109,6 @@ async function stdio(settings: SettingsSource) {
 		cleanup: { dir: join(homedir(), ".manas") },
 	});
 	for await (const line of console) if (line.trim()) host.receive(line);
-	host.close();
+	await host.close();
 	process.exit(0);
 }

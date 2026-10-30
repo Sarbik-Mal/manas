@@ -608,7 +608,7 @@ export async function runCli({
 		resumeId = (await list())[0]?.session_id;
 		if (!resumeId) {
 			say(r.red("No session to continue in this folder.", style));
-			host.close();
+			await host.close();
 			return 1;
 		}
 	} else if (resume === "pick") {
@@ -619,7 +619,7 @@ export async function runCli({
 	const failed = await start(resumeId);
 	if (failed) {
 		say(r.red(failed, style));
-		host.close();
+		await host.close();
 		return 1;
 	}
 	say(r.header({ version, model, effort, mode, cwd }, style));
@@ -646,7 +646,7 @@ export async function runCli({
 				quitting = true;
 				break;
 			case "clear":
-				host.close();
+				await host.close("clear");
 				await open();
 				await start();
 				history = [];
@@ -656,7 +656,7 @@ export async function runCli({
 			case "resume": {
 				const id = await pick();
 				if (!id) break;
-				host.close();
+				await host.close("resume");
 				clearScreen();
 				await open();
 				const error = await start(id);
@@ -706,7 +706,7 @@ export async function runCli({
 				break;
 		}
 	}
-	host.close();
+	await host.close(quitting ? "prompt_input_exit" : "other");
 	return 0;
 }
 

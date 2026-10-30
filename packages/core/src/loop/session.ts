@@ -68,6 +68,7 @@ export function createSession({
 	toolCtx,
 	backups,
 	context,
+	opening: startOpening,
 	today = localToday,
 	verbosity,
 }: {
@@ -91,6 +92,8 @@ export function createSession({
 	// The first message of a new session (its environment), sent before the
 	// first prompt; a resumed session already has it.
 	context?: () => string;
+	// What SessionStart hooks add; the first turn waits for it (3.7).
+	opening?: Promise<string | undefined>;
 	// Today's date, as YYYY-MM-DD; tests move the clock.
 	today?: () => string;
 	// Answer length, fixed for the session so the cache never breaks.
@@ -99,6 +102,7 @@ export function createSession({
 	// Called whenever a turn is stopped, so pending requests can be withdrawn.
 	onInterrupt?: () => void;
 }) {
+	let opening = startOpening;
 	const history: ResponseInputItem[] = [...items];
 	// Every item the loop adds is scrubbed, then saved, then kept: secrets never
 	// reach the model or the session file, and a killed process loses at most
@@ -125,10 +129,27 @@ export function createSession({
 		emit({ type: "prompt_delivered", promptId: q.id, text: q.text });
 		return { role: "user", content: q.text };
 	};
-	const takeNext = () => {
+	// UserPromptSubmit (3.7): false if a hook blocked the prompt; its context
+	// goes in just before it. Esc during the check drops the prompt too.
+	const admit = async (q: Queued, signal: AbortSignal) => {
+		const gate = await toolCtx?.hooks?.prompt(q.text, signal);
+		if (signal.aborted) return false;
+		if (gate?.block !== undefined) {
+			emit({ type: "notice", level: "warn", text: gate.block });
+			return false;
+		}
+		if (gate?.context)
+			history.push({ role: "developer", content: gate.context });
+		return true;
+	};
+	const takeNext = async () => {
 		const next = queue.filter((q) => q.priority === "next");
 		for (const q of next) queue.splice(queue.indexOf(q), 1);
-		return next.map(deliver);
+		const out: ResponseInputItem[] = [];
+		for (const q of next)
+			if (await admit(q, (running as AbortController).signal))
+				out.push(deliver(q));
+		return out;
 	};
 	const stop = () => {
 		running?.abort();
@@ -158,6 +179,11 @@ export function createSession({
 					history.length === 0 ? context() : dateNote(history, today());
 				if (note) history.push({ role: "developer", content: note });
 			}
+			// SessionStart hooks' context: once, after the environment.
+			const opened = await opening;
+			opening = undefined;
+			if (opened) history.push({ role: "developer", content: opened });
+			if (!(await admit(q, ac.signal))) continue;
 			// The code as it is before this prompt, for /rewind (2.6). Prompts
 			// folded into a running turn get none, as in Claude Code.
 			await backups?.checkpoint(history.length);

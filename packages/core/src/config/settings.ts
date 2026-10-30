@@ -73,6 +73,51 @@ const KNOWN = new Set(TOOLS.map(toolKey));
 
 const Strings = Type.Array(Type.String());
 const closed = { additionalProperties: false } as const;
+
+// Claude Code's hook format (3.7): command hooks on the events Manas can fire.
+export const HOOK_EVENTS = [
+	"PreToolUse",
+	"PostToolUse",
+	"PostToolUseFailure",
+	"PermissionRequest",
+	"PostToolBatch",
+	"UserPromptSubmit",
+	"Stop",
+	"StopFailure",
+	"SessionStart",
+	"SessionEnd",
+] as const;
+export type HookEvent = (typeof HOOK_EVENTS)[number];
+// `if` only means something where there's a tool (Claude's rule).
+const IF_EVENTS = new Set([
+	"PreToolUse",
+	"PostToolUse",
+	"PostToolUseFailure",
+	"PermissionRequest",
+]);
+const HookHandler = Type.Object(
+	{
+		type: Type.Literal("command"),
+		command: Type.String({ minLength: 1 }),
+		args: Type.Optional(Strings),
+		shell: Type.Optional(
+			Type.Union([Type.Literal("bash"), Type.Literal("powershell")]),
+		),
+		timeout: Type.Optional(Type.Number({ exclusiveMinimum: 0 })),
+		if: Type.Optional(Type.String()),
+		onFailure: Type.Optional(
+			Type.Union([Type.Literal("continue"), Type.Literal("block")]),
+		),
+	},
+	closed,
+);
+export type HookHandler = Static<typeof HookHandler>;
+const HookMatcher = Type.Object({
+	matcher: Type.Optional(Type.String()),
+	hooks: Type.Array(HookHandler),
+});
+export type HookMatcher = Static<typeof HookMatcher>;
+
 const KEYS = {
 	$schema: Type.String(),
 	mode: Type.Union(MODES.map((m) => Type.Literal(m))),
@@ -116,8 +161,8 @@ const KEYS = {
 		},
 		closed,
 	),
-	// Format planned with milestone 3.
-	hooks: Type.Object({}),
+	hooks: Type.Record(Type.String(), Type.Array(HookMatcher)),
+	disableAllHooks: Type.Boolean(),
 } satisfies Record<string, TSchema>;
 
 type Keys = typeof KEYS;
@@ -223,12 +268,13 @@ function readLayer(file: string, warnings: string[]): Settings {
 		throw new SettingsError(`settings ${file}: must be an object`);
 	}
 	const out: Record<string, unknown> = {};
-	for (const [key, value] of Object.entries(raw)) {
+	for (const [key, read] of Object.entries(raw)) {
 		const schema = KEYS[key as keyof Keys];
 		if (!schema) {
 			warnings.push(`settings ${file}: unknown key "${key}" (ignored)`);
 			continue;
 		}
+		const value = key === "hooks" ? cleanHooks(read, file, warnings) : read;
 		const problems = Value.Errors(schema, value).map(
 			(e) => `${key}${e.instancePath.replaceAll("/", ".")}: ${e.message}`,
 		);
@@ -242,6 +288,59 @@ function readLayer(file: string, warnings: string[]): Settings {
 			continue;
 		}
 		out[key] = value;
+	}
+	return out;
+}
+
+// One bad hook warns and goes; the others stay. A field Manas doesn't have
+// (`async`, another `type`) drops its handler, so a hook copied from Claude Code
+// never silently does something else.
+function cleanHooks(raw: unknown, file: string, warnings: string[]) {
+	const warn = (text: string) =>
+		warnings.push(`settings ${file}: hooks.${text} (ignored)`);
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+	const out: Record<string, HookMatcher[]> = {};
+	for (const [event, list] of Object.entries(raw)) {
+		if (!(HOOK_EVENTS as readonly string[]).includes(event)) {
+			warn(`${event}: not an event Manas fires`);
+			continue;
+		}
+		if (!Array.isArray(list)) {
+			warn(`${event}: must be a list`);
+			continue;
+		}
+		for (const [i, entry] of list.entries()) {
+			const hooks = (entry as { hooks?: unknown } | null)?.hooks;
+			const matcher = (entry as { matcher?: unknown } | null)?.matcher;
+			if (
+				!Array.isArray(hooks) ||
+				(matcher !== undefined && typeof matcher !== "string")
+			) {
+				warn(`${event}[${i}]: needs a hooks list and a text matcher`);
+				continue;
+			}
+			const kept = hooks.filter((h, j) => {
+				const at = `${event}[${i}].hooks[${j}]`;
+				const bad = Value.Errors(HookHandler, h).map(
+					(e) => `${e.instancePath.slice(1) || "handler"}: ${e.message}`,
+				);
+				if (bad.length > 0) warn(`${at}: ${bad.join("; ")}`);
+				else if (h.if !== undefined && !IF_EVENTS.has(event))
+					warn(`${at}: "if" only works on tool events`);
+				else if (h.if !== undefined && !parseRule(h.if))
+					warn(`${at}: "if" must be Tool or Tool(...)`);
+				else return true;
+				return false;
+			}) as HookHandler[];
+			if (kept.length > 0)
+				out[event] = [
+					...(out[event] ?? []),
+					{
+						...(matcher !== undefined && { matcher: matcher as string }),
+						hooks: kept,
+					},
+				];
+		}
 	}
 	return out;
 }
@@ -322,7 +421,8 @@ function merge(layers: Settings[]): Settings {
 				for (const [k, v] of Object.entries(value)) {
 					if (v === undefined) continue;
 					into[k] =
-						LISTS.has(`${key}.${k}`) && Array.isArray(into[k])
+						(LISTS.has(`${key}.${k}`) || key === "hooks") &&
+						Array.isArray(into[k])
 							? [...new Set([...(into[k] as unknown[]), ...(v as unknown[])])]
 							: v;
 				}

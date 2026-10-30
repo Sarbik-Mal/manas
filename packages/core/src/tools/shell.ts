@@ -276,5 +276,7 @@ export async function runShell(
 	}
 	const text = parts.join("\n").replace(/\r\n/g, "\n") || "(no output)";
 	// An ok result comes back whole; callTool spills it if it's long.
-	return failed ? cut(text) : text;
+	if (!failed) return text;
+	ctx.failed?.(`Exit code ${code}\n${cut(text)}`);
+	return cut(text);
 }

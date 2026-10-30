@@ -4,6 +4,7 @@ import type { ToolSpec } from "../provider/openai";
 import type { Vault } from "../safety/scrub";
 import type { Answers, Questions } from "./ask";
 import type { Backups } from "./backups";
+import type { Hooks } from "./hooks";
 import type { ReadRecord } from "./reads";
 import { RESULT_MAX, spill } from "./spill";
 import type { Tasks } from "./tasks";
@@ -38,6 +39,10 @@ export type ToolCtx = {
 	scratch?: string;
 	// Where results too big for the conversation are saved (3.4).
 	results?: string;
+	// The user's hooks (3.7); none in tests that don't need them.
+	hooks?: Hooks;
+	// A shell says its command failed, so PostToolUseFailure fires.
+	failed?: (error: string) => void;
 };
 // What a session hands every call; `signal` is per turn.
 export type SessionCtx = Omit<ToolCtx, "signal">;
@@ -78,7 +83,12 @@ export type Permit = (call: {
 	input: unknown;
 	callId: string;
 	diff?: string;
-}) => Promise<{ output: string; stop?: boolean } | undefined>;
+	// What a PreToolUse hook said (3.7).
+	hook?: { decision?: "allow" | "ask"; reason?: string };
+	// `input`: go ahead with this instead (a PermissionRequest hook changed it).
+}) => Promise<
+	{ output: string; stop?: boolean } | { input: unknown } | undefined
+>;
 
 // Thrown by `run` when the user said no (declined a question): the call is
 // denied and the turn stops, as a plain No does.
@@ -130,26 +140,46 @@ export async function callTool(
 	} catch {
 		return error("arguments are not valid JSON");
 	}
-	const errors = Value.Errors(tool.schema, input);
-	if (errors.length > 0) {
-		return error(
-			`invalid input for ${name}: ${describeErrors(errors).join("; ")}`,
-		);
+	const invalid = async (value: unknown) => {
+		const errors = Value.Errors(tool.schema, value);
+		if (errors.length > 0)
+			return `invalid input for ${name}: ${describeErrors(errors).join("; ")}`;
+		try {
+			return await tool.validate?.(value, ctx);
+		} catch (err) {
+			return (err as Error).message;
+		}
+	};
+	const bad = await invalid(input);
+	if (bad) return error(bad);
+	// 2. PreToolUse hooks, then permission. A hook's new input is checked
+	// again like the model's.
+	const { hooks, signal } = ctx;
+	const pre = await hooks?.pre(tool, input, callId, signal);
+	const context = pre?.context ? [pre.context] : [];
+	if (pre?.deny !== undefined)
+		return {
+			status: "denied",
+			output: `error: ${pre.deny}`,
+			stop: pre.stop !== undefined,
+		};
+	if (pre?.input !== undefined) {
+		const worse = await invalid(pre.input);
+		if (worse) return error(worse);
+		input = pre.input;
 	}
-	try {
-		const invalid = await tool.validate?.(input, ctx);
-		if (invalid) return error(invalid);
-	} catch (err) {
-		return error((err as Error).message);
-	}
-	// 2. Permission. Backup (3) joins in milestone 2.
 	const refused = await permit({
 		tool,
 		input,
 		callId,
 		diff: tool.preview?.(input),
+		hook: pre && { decision: pre.decision, reason: pre.reason },
 	});
-	if (refused) {
+	if (refused && "input" in refused) {
+		const worse = await invalid(refused.input);
+		if (worse) return error(worse);
+		input = refused.input;
+	} else if (refused) {
 		return {
 			status: "denied",
 			output: `error: ${refused.output}`,
@@ -157,14 +187,45 @@ export async function callTool(
 		};
 	}
 	// 4. Run.
+	const started = performance.now();
+	let failure: string | undefined;
 	let output: string;
+	let thrown = false;
 	try {
-		output = await tool.run(input, { ...ctx, callId });
+		output = await tool.run(input, {
+			...ctx,
+			callId,
+			failed: (e) => {
+				failure = e;
+			},
+		});
 	} catch (err) {
 		if (err instanceof Stopped)
 			return { status: "denied", output: `error: ${err.message}`, stop: true };
-		return error((err as Error).message);
+		output = `error: ${(err as Error).message}`;
+		failure = (err as Error).message;
+		thrown = true;
 	}
+	// 5. PostToolUse or PostToolUseFailure; a cancelled tool fires neither.
+	let stop: string | undefined;
+	if (hooks && !signal.aborted) {
+		const ms = performance.now() - started;
+		const after =
+			failure === undefined
+				? await hooks.post(tool, input, callId, output, ms, signal)
+				: await hooks.failure(tool, input, callId, failure, ms, signal);
+		if (after.output !== undefined) output = after.output;
+		context.push(...after.notes);
+		stop = after.stop;
+	}
+	if (stop !== undefined) context.push(stop);
+	if (context.length > 0) output = [output, ...context].join("\n\n");
+	if (thrown)
+		return {
+			status: "error",
+			output,
+			...(stop !== undefined && { stop: true }),
+		};
 	// 6. Return; a result too big goes to a file, the model gets a preview.
 	// ponytail: each result on its own; Claude Code also budgets a round's
 	// results together, add that if many big parallel results fill the context.
@@ -175,7 +236,7 @@ export async function callTool(
 			vault: ctx.vault,
 			max: tool.maxResultChars ?? RESULT_MAX,
 		});
-	return { status: "ok", output };
+	return { status: "ok", output, ...(stop !== undefined && { stop: true }) };
 }
 
 const error = (message: string): ToolResult => ({

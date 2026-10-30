@@ -16,7 +16,7 @@ export { cut } from "./shell";
 
 // The PowerShell tool (tools.md §2). Spawned as Claude Code spawns its own.
 
-const SHELL = Bun.which("pwsh") ?? "powershell.exe";
+export const SHELL = Bun.which("pwsh") ?? "powershell.exe";
 const IS_51 = !/pwsh/i.test(SHELL);
 export const EDITION = IS_51
 	? "Windows PowerShell 5.1 (powershell.exe)"

@@ -5,6 +5,7 @@ import type {
 import { streamResponse, type Usage } from "../provider/openai";
 import { Vault } from "../safety/scrub";
 import { NO_BACKUPS } from "../tools/backups";
+import { errorKind, STOP_CAP } from "../tools/hooks";
 import { readRecord } from "../tools/reads";
 import {
 	buildRegistry,
@@ -70,13 +71,19 @@ export async function* runTurn(
 		verbosity?: string;
 		registry?: Registry;
 		signal?: AbortSignal;
-		inject?: () => (string | ResponseInputItem)[];
+		inject?: () =>
+			| (string | ResponseInputItem)[]
+			| Promise<(string | ResponseInputItem)[]>;
 		permit?: Permit;
 		// What every tool call gets besides the signal.
 		ctx?: SessionCtx;
 	} = {},
 ): AsyncGenerator<LoopEvent> {
 	const usage: Usage = { input: 0, cached: 0, output: 0, reasoning: 0 };
+	const hooks = ctx.hooks;
+	// Stop hooks that kept the model going, in a row (3.7).
+	let continued = 0;
+	const stopCap = Number(process.env.MANAS_STOP_HOOK_BLOCK_CAP) || STOP_CAP;
 	const finish = (stopReason: "done" | "interrupted") =>
 		({ type: "turn_finished", stopReason, usage }) as const;
 	history.push(asItem(prompt));
@@ -104,6 +111,7 @@ export async function* runTurn(
 		} catch (err) {
 			if (text) yield { type: "message_done", text };
 			if (!signal.aborted) {
+				await hooks?.stopFailure(errorKind(err), (err as Error).message);
 				// The failed reply is dropped; earlier rounds stay in history.
 				yield {
 					type: "turn_finished",
@@ -126,9 +134,29 @@ export async function* runTurn(
 			(i): i is ResponseFunctionToolCall => i.type === "function_call",
 		);
 		if (calls.length === 0) {
+			const after = await hooks?.stop(
+				continued > 0,
+				text,
+				(ctx.tasks?.list() ?? [])
+					.filter((t) => t.status === "running")
+					.map((t) => ({ task_id: t.id, description: t.description })),
+				signal,
+			);
+			if (signal.aborted) {
+				history.push(note);
+				yield finish("interrupted");
+				return;
+			}
+			// Past the cap the next block is overridden, as in Claude Code.
+			if (after?.again && continued < stopCap) {
+				continued++;
+				history.push({ role: "developer", content: after.again });
+				continue;
+			}
 			yield finish("done");
 			return;
 		}
+		continued = 0;
 
 		const interrupted = new Promise<"interrupted">((resolve) => {
 			if (signal.aborted) resolve("interrupted");
@@ -190,6 +218,24 @@ export async function* runTurn(
 			yield finish("interrupted");
 			return;
 		}
-		for (const p of inject()) history.push(asItem(p));
+		const batch = await hooks?.batch(
+			await Promise.all(
+				started.map(async ({ call, input, result }) => ({
+					tool_name: call.name,
+					tool_input: input,
+					tool_use_id: call.call_id,
+					tool_response: (await result).output,
+				})),
+			),
+			signal,
+		);
+		if (batch?.context)
+			history.push({ role: "developer", content: batch.context });
+		if (batch?.stop !== undefined) {
+			history.push({ role: "developer", content: batch.stop });
+			yield finish("done");
+			return;
+		}
+		for (const p of await inject()) history.push(asItem(p));
 	}
 }
