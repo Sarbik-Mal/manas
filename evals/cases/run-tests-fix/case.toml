@@ -1,0 +1,21 @@
+# Milestone 3: no symptom given, so the model has to run the tests to find out.
+task = "Run the tests and fix whatever fails."
+fixture = "ts-bugs"
+mode = "acceptEdits"
+# The shell's `bun test` asks, and the runner denies prompts by default.
+answers = { permissions = "allow" }
+sets = ["full"]
+limits = { cost_usd = 0.05 }
+
+[[check]]
+type = "command_ran"
+matches = "(bun|npm)( run)? test"
+
+[[check]]
+type = "command"
+run = "bun test"
+expect = 0
+
+[[check]]
+type = "unchanged"
+path = "cart.test.ts"

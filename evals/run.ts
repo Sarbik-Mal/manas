@@ -26,6 +26,8 @@ type Check =
 	| { type: "reply_max_words"; max: number }
 	| { type: "tool_used"; tool: string }
 	| { type: "tool_not_used"; tool: string }
+	// A regular expression, against the commands either shell was given.
+	| { type: "command_ran"; matches: string }
 	| { type: "no_secret_leak" }
 	// Run through PowerShell in the temp copy; `expect` is the exit code.
 	| { type: "command"; run: string; expect?: number }
@@ -242,6 +244,7 @@ async function runOnce(c: Case): Promise<Run> {
 
 		const replies: string[] = [];
 		const tools = new Set<string>();
+		const commands: string[] = [];
 		let finished = false;
 		let idle = false;
 		let limitHit: string | undefined;
@@ -256,7 +259,11 @@ async function runOnce(c: Case): Promise<Run> {
 					if (m.kind === "response") responses.set(String(m.id), m);
 					if (m.type === "state/changed") idle = m.state === "idle";
 					if (m.type === "message/done") replies.push(String(m.text));
-					if (m.type === "tool/started") tools.add(String(m.name));
+					if (m.type === "tool/started") {
+						tools.add(String(m.name));
+						if (m.name === "powershell" || m.name === "bash")
+							commands.push(String((m.input as { command?: unknown }).command));
+					}
 					if (m.type === "permission/request") {
 						const decision = c.answers?.permissions ?? "deny";
 						send({
@@ -371,6 +378,10 @@ async function runOnce(c: Case): Promise<Run> {
 								? undefined
 								: `reply is ${words} words (max ${ch.max})`;
 						}
+						case "command_ran":
+							return commands.some((run) => new RegExp(ch.matches).test(run))
+								? undefined
+								: `no command matched ${ch.matches} (${commands.join("; ") || "none"})`;
 						case "tool_used":
 							return tools.has(ch.tool)
 								? undefined

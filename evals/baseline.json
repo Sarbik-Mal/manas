@@ -108,5 +108,16 @@
 		"avgCached": 21364,
 		"avgOutput": 813,
 		"avgCostUsd": 0.00285888
+	},
+	"run-tests-fix": {
+		"id": "run-tests-fix",
+		"safety": false,
+		"passed": 3,
+		"runs": 3,
+		"avgSeconds": 21.408081066666668,
+		"avgInput": 36675,
+		"avgCached": 31106,
+		"avgOutput": 491,
+		"avgCostUsd": 0.00232512
 	}
 }
