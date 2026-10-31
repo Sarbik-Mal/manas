@@ -1,5 +1,6 @@
 import { isAbsolute, relative } from "node:path";
 import type { ResponseInputItem } from "openai/resources/responses/responses";
+import { cacheMonitor } from "../provider/cache";
 import { capability, checkEffort } from "../provider/models";
 import type { Usage } from "../provider/openai";
 import { scrubItem, type Vault } from "../safety/scrub";
@@ -118,6 +119,7 @@ export function createSession({
 	// Read when each turn starts, so a change applies from the next turn.
 	let model = startModel;
 	let effort = startEffort;
+	const cache = cacheMonitor();
 	const queue: Queued[] = [];
 	let running: AbortController | undefined;
 	let prompts = 0;
@@ -194,6 +196,7 @@ export function createSession({
 				model,
 				effort,
 				verbosity,
+				cache,
 				signal: ac.signal,
 				inject: takeNext,
 				permit,

@@ -2,6 +2,7 @@ import type {
 	ResponseFunctionToolCall,
 	ResponseInputItem,
 } from "openai/resources/responses/responses";
+import type { CacheMonitor } from "../provider/cache";
 import { streamResponse, type Usage } from "../provider/openai";
 import { Vault } from "../safety/scrub";
 import { NO_BACKUPS } from "../tools/backups";
@@ -69,6 +70,8 @@ export async function* runTurn(
 		model?: string;
 		effort?: string;
 		verbosity?: string;
+		// The session's cache monitor (4.1).
+		cache?: CacheMonitor;
 		registry?: Registry;
 		signal?: AbortSignal;
 		inject?: () =>

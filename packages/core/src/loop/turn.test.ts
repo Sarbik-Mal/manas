@@ -1,7 +1,17 @@
 import { afterAll, beforeEach, expect, test } from "bun:test";
+import { readdirSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import type { ResponseInputItem } from "openai/resources/responses/responses";
 import Type, { type TSchema } from "typebox";
-import { call, fakeOpenAI, message, say } from "../testing/fake-openai";
+import { disableDebugLog, enableDebugLog } from "../log/debug";
+import { cacheMonitor } from "../provider/cache";
+import {
+	call,
+	fakeOpenAI,
+	message,
+	say,
+	tempRoot,
+} from "../testing/fake-openai";
 import { buildRegistry, defineTool, type Tool } from "../tools/registry";
 import { type LoopEvent, runTurn } from "./turn";
 
@@ -239,4 +249,30 @@ test("reasoning items are sent back on the next round", async () => {
 	replies.push({ items: [reasoning, call("echo", { x: null })] }, say("ok"));
 	await drain(runTurn([], "go", tools(echo)));
 	expect(bodies[1].input).toContainEqual(reasoning as ResponseInputItem);
+});
+
+test("a cache that falls between rounds is warned about in the debug log", async () => {
+	const dir = tempRoot();
+	enableDebugLog(dir);
+	try {
+		replies.push(
+			{
+				items: [call("echo", { x: null })],
+				usage: { input: 10_000, cached: 9_000, output: 2, reasoning: 0 },
+			},
+			{
+				...say("ok"),
+				usage: { input: 10_100, cached: 0, output: 2, reasoning: 0 },
+			},
+		);
+		await drain(runTurn([], "go", { ...tools(echo), cache: cacheMonitor() }));
+		const log = readdirSync(dir)
+			.map((f) => readFileSync(join(dir, f), "utf8"))
+			.join("");
+		expect(log).toContain('"kind":"cache","level":"warn"');
+		expect(log).toContain('"from":9000,"to":0');
+	} finally {
+		disableDebugLog();
+		rmSync(dir, { recursive: true, force: true });
+	}
 });

@@ -10,6 +10,7 @@ import type { ReasoningEffort } from "openai/resources/shared";
 import { debugLog } from "../log/debug";
 import { envValues } from "../safety/env-preload";
 import { installId } from "../storage/install-id";
+import type { CacheMonitor } from "./cache";
 import { capability, checkEffort } from "./models";
 
 // The SDK already retries 408/409/429/5xx and connection errors, honoring
@@ -77,8 +78,11 @@ export async function* streamResponse(
 		instructions,
 		verbosity,
 		signal,
+		cache,
 	}: {
 		model?: string;
+		// Watches this conversation's cache hits (4.1).
+		cache?: CacheMonitor;
 		// Answer length; dropped for a model that can't take it.
 		verbosity?: string;
 		// The system prompt; the same for every request so it stays cached.
@@ -155,6 +159,21 @@ export async function* streamResponse(
 		}
 		// The SDK ends the stream quietly on abort; make it an error.
 		signal?.throwIfAborted();
+		// What was sent, not asked for: a model without reasoning drops the
+		// effort, so changing it there can't break the cache.
+		cache?.(
+			{
+				model,
+				effort: reasoning ? effort : undefined,
+				verbosity: capability(model).verbosity ? verbosity : undefined,
+				instructions,
+				tools,
+				input,
+			},
+			usage,
+		);
+		if (usage?.input)
+			entry.hit = Math.round((100 * usage.cached) / usage.input);
 		entry.status = "ok";
 		return { output, usage };
 	} catch (err) {
